@@ -1,0 +1,59 @@
+[package]
+name = "mynx"
+version = "1.2.2"
+description = "Mynx - Offline password manager"
+authors = ["Mynx"]
+license = "MIT"
+repository = ""
+edition = "2021"
+default-run = "mynx"
+
+[build-dependencies]
+tauri-build = { version = "2.0.0", features = [] }
+
+[dependencies]
+tauri = { version = "2.0.0", features = ["tray-icon"] }
+tauri-plugin-shell = "2.0.0"
+tauri-plugin-os = "2.0.0"
+tauri-plugin-clipboard-manager = "2.0.0"
+tauri-plugin-dialog = "=2.0.0"
+tauri-plugin-global-shortcut = "2.0.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1.0"
+thiserror = "1.0"
+chrono = "0.4"
+zeroize = { version = "1.7", features = ["derive"] }
+getrandom = "0.2"
+ring = "0.17"
+argon2 = "0.5"
+chacha20poly1305 = "0.10"
+rand_core = "0.6"
+hkdf = "0.12"
+sha2 = "0.10"
+subtle = "2.6"
+axum = "0.7"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"
+keyring = { version = "3", default-features = false, features = ["windows-native"] }
+windows = { version = "0.58", features = ["Foundation", "Security_Credentials_UI", "Win32_System_Memory", "Win32_System_Threading", "Win32_System_Diagnostics_Debug", "Win32_System_Kernel", "Win32_System_Pipes", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_UI_Controls_Dialogs"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[[bin]]
+name = "mynx"
+path = "src/main.rs"
+
+[[bin]]
+name = "mynx-native-host"
+path = "src/native_host.rs"
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.dev]
+opt-level = 1
+

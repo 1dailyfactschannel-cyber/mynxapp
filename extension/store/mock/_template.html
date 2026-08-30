@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>{{TITLE}}</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      background: #ffffff;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      overflow: hidden;
+    }
+
+    /* ---- fake Chrome window chrome ---- */
+    .browser-bar { background: #202124; height: 76px; }
+    .browser-tabs { display: flex; align-items: flex-end; height: 36px; padding: 4px 8px 0; gap: 4px; }
+    .browser-tab {
+      display: flex; align-items: center; gap: 8px;
+      background: #35363a; color: #e8eaed;
+      font-size: 12px; padding: 0 14px; height: 32px;
+      border-radius: 8px 8px 0 0; max-width: 220px;
+    }
+    .browser-tab .dot { width: 14px; height: 14px; border-radius: 50%; background: #24292f; flex: none;
+      display: inline-flex; align-items: center; justify-content: center; color: #fff; font-size: 9px; font-weight: 700; }
+    .browser-urlbar { display: flex; align-items: center; gap: 10px; padding: 4px 10px 6px; }
+    .browser-url {
+      flex: 1; background: #35363a; color: #e8eaed; border-radius: 999px;
+      font-size: 12.5px; padding: 6px 14px; display: flex; align-items: center; gap: 8px;
+    }
+    .browser-url .lock { color: #9aa0a6; font-size: 11px; }
+    .ext-puzzle {
+      width: 24px; height: 24px; border-radius: 6px; background: #35363a; color: #9aa0a6;
+      display: flex; align-items: center; justify-content: center; font-size: 13px; flex: none;
+    }
+    .ext-mynx {
+      width: 24px; height: 24px; border-radius: 6px; background: #10b981; color: #0a0a0f;
+      display: flex; align-items: center; justify-content: center; font-size: 13px; flex: none; font-weight: 700;
+    }
+
+    /* ---- fake GitHub sign-in page ---- */
+    .gh-page { background: #f6f8fa; height: calc(100% - 76px); position: relative; }
+    .gh-main { padding-top: 48px; display: flex; flex-direction: column; align-items: center; }
+    .gh-octo {
+      width: 48px; height: 48px; border-radius: 50%; background: #24292f; color: #fff;
+      display: flex; align-items: center; justify-content: center; font-size: 22px; font-weight: 700;
+      margin-bottom: 16px;
+    }
+    .gh-h1 { font-size: 24px; font-weight: 300; color: #24292f; letter-spacing: -0.5px; margin-bottom: 16px; }
+    .gh-card {
+      width: 320px; background: #ffffff; border: 1px solid #d8dee4; border-radius: 6px;
+      padding: 20px; font-size: 14px;
+    }
+    .gh-card label { display: block; font-size: 14px; color: #24292f; margin-bottom: 8px; }
+    .gh-card label .forgot { float: right; font-size: 12px; color: #0969da; }
+    .gh-card input {
+      width: 100%; padding: 6px 10px; margin-bottom: 16px;
+      border: 1px solid #d8dee4; border-radius: 6px; font-size: 14px; outline: none;
+      background: #f6f8fa;
+    }
+    .gh-card .gh-btn {
+      width: 100%; padding: 7px 0; border: none; border-radius: 6px;
+      background: #1f883d; color: #fff; font-size: 14px; font-weight: 600;
+    }
+    .gh-subcard {
+      width: 320px; margin-top: 16px; padding: 14px 20px; text-align: center;
+      border: 1px solid #d8dee4; border-radius: 6px; font-size: 13px; color: #24292f; background: #fff;
+    }
+    .gh-subcard a { color: #0969da; text-decoration: none; }
+
+    /* ---- Mynx popup overlay (styles from popup.html, scoped) ---- */
+    .mynx-popup-wrap {
+      position: absolute; top: 84px; right: 20px;
+      border-radius: 10px; overflow: hidden;
+      box-shadow: 0 16px 48px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.06);
+    }
+    .mynx-popup {
+      width: 340px;
+      background: #0a0a0f;
+      color: #e5e7eb;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 13px;
+    }
+    .mynx-popup .header { display: flex; align-items: center; gap: 8px; padding: 12px 14px 10px; }
+    .mynx-popup .logo { font-size: 18px; }
+    .mynx-popup .title { font-size: 15px; font-weight: 700; flex: 1; }
+    .mynx-popup .pill { padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+    .mynx-popup .pill.unlocked { background: rgba(16,185,129,0.15); color: #34d399; }
+    .mynx-popup .pill.locked { background: rgba(245,158,11,0.15); color: #fbbf24; }
+    .mynx-popup .pill.offline { background: rgba(100,116,139,0.2); color: #94a3b8; }
+    .mynx-popup .tabs { display: flex; gap: 2px; padding: 0 10px; border-bottom: 1px solid #1f2937; }
+    .mynx-popup .tab {
+      flex: 1; padding: 8px 0; background: none; border: none;
+      border-bottom: 2px solid transparent; color: #64748b;
+      font-size: 12px; font-weight: 600; cursor: pointer;
+    }
+    .mynx-popup .tab:hover { color: #94a3b8; }
+    .mynx-popup .tab.active { color: #10b981; border-bottom-color: #10b981; }
+    .mynx-popup .tab .count {
+      display: inline-block; min-width: 16px; padding: 0 4px; margin-left: 4px;
+      border-radius: 999px; background: #10b981; color: #0a0a0f; font-size: 10px;
+    }
+    .mynx-popup .pane { padding: 12px 14px; min-height: 160px; max-height: 380px; overflow-y: auto; }
+    .mynx-popup .hidden { display: none; }
+    .mynx-popup .empty { padding: 28px 10px; text-align: center; color: #64748b; font-size: 12px; line-height: 1.6; }
+    .mynx-popup .entry { display: flex; align-items: center; gap: 8px; padding: 8px 6px; border-radius: 8px; }
+    .mynx-popup .entry:hover { background: rgba(255,255,255,0.04); }
+    .mynx-popup .entry .meta { flex: 1; min-width: 0; }
+    .mynx-popup .entry .meta .t { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .mynx-popup .entry .meta .u { color: #64748b; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .mynx-popup .entry .actions { display: flex; gap: 4px; }
+    .mynx-popup button.btn {
+      padding: 5px 10px; border: none; border-radius: 6px;
+      background: #10b981; color: #0a0a0f; font-size: 12px; font-weight: 700; cursor: pointer;
+    }
+    .mynx-popup button.btn:hover { background: #34d399; }
+    .mynx-popup button.btn:disabled { background: #1f2937; color: #64748b; cursor: not-allowed; }
+    .mynx-popup button.icon-btn {
+      width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center;
+      border: 1px solid #1f2937; border-radius: 6px; background: transparent;
+      color: #94a3b8; font-size: 13px; cursor: pointer;
+    }
+    .mynx-popup button.icon-btn:hover { color: #10b981; border-color: #10b981; }
+    .mynx-popup input[type="text"], .mynx-popup input[type="password"] {
+      width: 100%; padding: 7px 10px; border: 1px solid #1f2937; border-radius: 8px;
+      background: #111118; color: #e5e7eb; font-size: 13px; outline: none;
+    }
+    .mynx-popup input:focus { border-color: #10b981; }
+    .mynx-popup .gen-output { display: flex; gap: 6px; margin-bottom: 12px; }
+    .mynx-popup .gen-output input { font-family: ui-monospace, Consolas, monospace; }
+    .mynx-popup .gen-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+    .mynx-popup .gen-row label { flex: 1; color: #94a3b8; font-size: 12px; }
+    .mynx-popup .gen-checks { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 12px; }
+    .mynx-popup .gen-checks label { display: flex; align-items: center; gap: 6px; color: #94a3b8; font-size: 12px; }
+    .mynx-popup input[type="range"] { flex: 2; accent-color: #10b981; }
+    .mynx-popup input[type="checkbox"] { accent-color: #10b981; }
+    .mynx-popup .pwd-mask { font-family: ui-monospace, Consolas, monospace; color: #64748b; font-size: 12px; }
+    .mynx-popup .toast {
+      position: fixed; bottom: 10px; left: 50%; transform: translateX(-50%);
+      padding: 5px 12px; border-radius: 999px; background: #10b981; color: #0a0a0f;
+      font-size: 11px; font-weight: 700; opacity: 0; transition: opacity 0.2s; pointer-events: none;
+    }
+    .mynx-popup .toast.show { opacity: 1; }
+  </style>
+</head>
+<body>
+  <div class="browser-bar">
+    <div class="browser-tabs">
+      <div class="browser-tab"><span class="dot">G</span><span>Sign in to GitHub</span></div>
+    </div>
+    <div class="browser-urlbar">
+      <div class="browser-url"><span class="lock">🔒</span><span>github.com/login</span></div>
+      <div class="ext-mynx">🔐</div>
+      <div class="ext-puzzle">🧩</div>
+    </div>
+  </div>
+
+  <div class="gh-page">
+    <div class="gh-main">
+      <div class="gh-octo">G</div>
+      <div class="gh-h1">Sign in to GitHub</div>
+      <div class="gh-card">
+        <label>Username or email address</label>
+        <input type="text" />
+        <label>Password <span class="forgot">Forgot password?</span></label>
+        <input type="password" />
+        <button class="gh-btn">Sign in</button>
+      </div>
+      <div class="gh-subcard">New to GitHub? <a href="#">Create an account</a>.</div>
+    </div>
+
+    <div class="mynx-popup-wrap">
+      <div class="mynx-popup">
+        <div class="header">
+          <div class="logo">🔐</div>
+          <div class="title">Mynx</div>
+          <div id="status-pill" class="pill offline">Offline</div>
+        </div>
+
+        <div class="tabs">
+          <button class="tab active" data-tab="site">Site</button>
+          <button class="tab" data-tab="all">All</button>
+          <button class="tab" data-tab="generator">Generator</button>
+          <button class="tab" data-tab="saved">Saved<span id="saved-count" class="count hidden">0</span></button>
+        </div>
+
+        <div id="pane-site" class="pane"></div>
+
+        <div id="pane-all" class="pane hidden">
+          <input id="search-input" type="text" placeholder="Search logins..." style="margin-bottom:8px" />
+          <div id="all-list"></div>
+        </div>
+
+        <div id="pane-generator" class="pane hidden">
+          <div class="gen-output">
+            <input id="gen-password" type="text" readonly />
+            <button id="gen-copy" class="icon-btn" title="Copy">⧉</button>
+          </div>
+          <div class="gen-row">
+            <label>Length <span id="gen-length-val">20</span></label>
+            <input id="gen-length" type="range" min="8" max="64" value="20" />
+          </div>
+          <div class="gen-checks">
+            <label><input type="checkbox" id="gen-upper" checked /> Uppercase</label>
+            <label><input type="checkbox" id="gen-lower" checked /> Lowercase</label>
+            <label><input type="checkbox" id="gen-digits" checked /> Digits</label>
+            <label><input type="checkbox" id="gen-symbols" checked /> Symbols</label>
+          </div>
+          <button id="gen-regen" class="btn" style="width:100%">Regenerate</button>
+        </div>
+
+        <div id="pane-saved" class="pane hidden"></div>
+
+        <div id="toast" class="toast">Copied</div>
+      </div>
+    </div>
+  </div>
+
+  <script src="mock-chrome.js"></script>
+  <script src="../../popup.js"></script>
+  <script>
+{{INIT_SCRIPT}}
+  </script>
+</body>
+</html>

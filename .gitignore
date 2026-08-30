@@ -1,0 +1,19 @@
+node_modules/
+dist/
+src-tauri/target/
+
+# Build artifacts / releases
+release-linux/
+extension/*.zip
+tools/.venv/
+
+# Local user vault backups (personal data)
+src-tauri/backups/
+
+# Logs
+*.log
+
+# Updater signing keys: never commit (private key lives in ~/.tauri/)
+.tauri/
+*.key
+extension/store/mock/.profile-*/

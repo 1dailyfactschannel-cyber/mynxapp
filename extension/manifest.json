@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "Mynx",
+  "version": "1.0.3",
+  "description": "Offline password manager. Autofill logins, generate strong passwords — your vault never leaves your PC. Requires Mynx desktop app.",
+  "author": "Matt",
+  "minimum_chrome_version": "102",
+  "homepage_url": "https://github.com/matt/mynx",
+  "permissions": ["activeTab", "storage", "nativeMessaging", "notifications"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_end"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Mynx"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  }
+}
