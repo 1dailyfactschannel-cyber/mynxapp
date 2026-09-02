@@ -1,9 +1,10 @@
 {
   "name": "com.matt.mynx.native",
   "description": "Mynx Native Messaging Host",
-  "path": "C:\\Program Files\\Mynx\\mynx-native-host.exe",
+  "path": "%LOCALAPPDATA%\\Mynx\\mynx-native-host.exe",
   "type": "stdio",
   "allowed_origins": [
+    "chrome-extension://kjgmcffggjpmghjmhkhdiandaoefkmpb/",
     "chrome-extension://falikbndiimjeolnkclmifhgobmghhfe/"
   ]
 }

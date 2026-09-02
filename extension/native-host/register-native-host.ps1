@@ -5,8 +5,11 @@
 #   powershell -ExecutionPolicy Bypass -File register-native-host.ps1 -ExtensionId "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 #   ... -HostPath "D:\Tools\mynx-native-host.exe" -ExtensionId "id1,id2"
 #
-# The extension manifest ships with a fixed public key, so its ID is the same
-# everywhere (unpacked and store build) and is baked in below as $StableId.
+# Two extension IDs are allowed by default:
+#   $StoreId - the ID Chrome Web Store assigned to the published item
+#              (store builds always install under it);
+#   $DevId   - the ID of unpacked/dev builds, derived from the "key"
+#              embedded in manifest.json (stable regardless of folder path).
 # Pass -ExtensionId only to additionally allow custom/local builds.
 
 param(
@@ -16,8 +19,10 @@ param(
 
 $ErrorActionPreference = "Stop"
 $HostName_ = "com.matt.mynx.native"
-# Stable ID of the published Mynx extension (derived from manifest.json "key").
-$StableId = "falikbndiimjeolnkclmifhgobmghhfe"
+# Canonical ID of the published Chrome Web Store item (Google-assigned).
+$StoreId = "kjgmcffggjpmghjmhkhdiandaoefkmpb"
+# ID of unpacked/dev builds (derived from manifest.json "key").
+$DevId   = "falikbndiimjeolnkclmifhgobmghhfe"
 
 Write-Host "=== Mynx native host registration ===" -ForegroundColor Cyan
 
@@ -40,10 +45,10 @@ if (-not $HostPath -or -not (Test-Path $HostPath)) {
 Write-Host "Host exe : $HostPath"
 
 # 2. Extension ID(s) ----------------------------------------------------------
-# The stable ID is always allowed (covers both the unpacked build and the
-# Chrome Web Store build - they share the same key). Extra IDs can be added
-# via -ExtensionId "id1,id2" for custom local builds.
-$ids = @("chrome-extension://$StableId/")
+# Both canonical IDs are always allowed: the Chrome Web Store build installs
+# under $StoreId, unpacked/dev builds run under $DevId. Extra IDs can be
+# added via -ExtensionId "id1,id2" for custom local builds.
+$ids = @("chrome-extension://$StoreId/", "chrome-extension://$DevId/")
 foreach ($raw in $ExtensionId.Split(",")) {
   $id = $raw.Trim().ToLower()
   if (-not $id) { continue }

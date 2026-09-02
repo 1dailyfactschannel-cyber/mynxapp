@@ -7,19 +7,31 @@
 //! (`src-tauri/windows/installer-hooks.nsh`), который прописывает те же
 //! ключи реестра сразу при установке; манифест генерируется здесь, потому
 //! что содержит абсолютный путь к `mynx-native-host.exe`.
+//!
+//! `allowed_origins` содержит ДВА ID расширения: канонический store-ID,
+//! присвоенный Chrome Web Store существующему item, и ID unpacked/dev-сборки,
+//! производный от вшитого в manifest.json публичного ключа. Покрытие обоих
+//! вариантов делает нативный месседжинг работающим «из коробки» независимо
+//! от способа установки расширения.
 
 /// Имя натив-хоста — должно совпадать с NATIVE_HOST_NAME в
 /// extension/background.js.
 pub const HOST_NAME: &str = "com.matt.mynx.native";
 
-/// Стабильный ID расширения — производный от публичного ключа в
-/// extension/manifest.json ("key"): одинаков для unpacked- и store-сборок,
-/// поэтому в allowed_origins достаточно одного значения.
-pub const STABLE_EXTENSION_ID: &str = "falikbndiimjeolnkclmifhgobmghhfe";
+/// Канонический ID расширения, присвоенный Chrome Web Store существующему
+/// опубликованному item. Версия из магазина устанавливается именно под ним;
+/// ID item в магазине неизменен и не зависит от содержимого загружаемого
+/// манифеста.
+pub const STORE_EXTENSION_ID: &str = "kjgmcffggjpmghjmhkhdiandaoefkmpb";
+
+/// ID unpacked/dev-сборки — производный от публичного ключа ("key"),
+/// вшитого в extension/manifest.json: стабилен независимо от пути папки,
+/// из которой загружено расширение.
+pub const DEV_EXTENSION_ID: &str = "falikbndiimjeolnkclmifhgobmghhfe";
 
 #[cfg(windows)]
 mod imp {
-    use super::{HOST_NAME, STABLE_EXTENSION_ID};
+    use super::{DEV_EXTENSION_ID, HOST_NAME, STORE_EXTENSION_ID};
     use std::fs;
     use std::path::PathBuf;
 
@@ -54,7 +66,7 @@ mod imp {
             return Err(format!("sidecar {} not found", host_exe.display()));
         }
 
-        // 2. Манифест хоста (UTF-8): путь к sidecar + стабильный ID расширения.
+        // 2. Манифест хоста (UTF-8): путь к sidecar + оба ID расширения.
         let local = std::env::var_os("LOCALAPPDATA")
             .map(PathBuf::from)
             .ok_or_else(|| "LOCALAPPDATA is not set".to_string())?;
@@ -67,7 +79,10 @@ mod imp {
             "description": "Mynx Native Messaging Host",
             "path": host_exe.display().to_string(),
             "type": "stdio",
-            "allowed_origins": [format!("chrome-extension://{STABLE_EXTENSION_ID}/")],
+            "allowed_origins": [
+                format!("chrome-extension://{STORE_EXTENSION_ID}/"),
+                format!("chrome-extension://{DEV_EXTENSION_ID}/"),
+            ],
         });
         fs::write(&manifest_path, manifest.to_string())
             .map_err(|e| format!("write manifest: {e}"))?;
@@ -91,13 +106,14 @@ mod imp {
 
 #[cfg(not(windows))]
 mod imp {
-    use super::{HOST_NAME, STABLE_EXTENSION_ID};
+    use super::{DEV_EXTENSION_ID, HOST_NAME, STORE_EXTENSION_ID};
 
     pub fn ensure_registration() {
         // Нативный месседжинг и его регистрация существуют только на Windows.
         // Ссылки на константы держат их «живыми» для clippy на не-Windows CI.
         debug_assert!(!HOST_NAME.is_empty());
-        debug_assert!(!STABLE_EXTENSION_ID.is_empty());
+        debug_assert!(!STORE_EXTENSION_ID.is_empty());
+        debug_assert!(!DEV_EXTENSION_ID.is_empty());
     }
 }
 
