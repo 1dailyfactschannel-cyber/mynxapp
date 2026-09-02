@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Mynx",
-  "version": "1.1.0",
+  "version": "1.0.5",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2iu6nzhyeOlZqbCfoNmKwfNLnG3HD5ThbDgZlHkHrwlzZ39vjnhIUDTB6gCwHZjI7KZJipgtfnkvup0ZwcMpYKdyxw9C0z5KdfAJ9Vgdfie5JDqY1OHI6iiVg1U8uK28A3ElGFhTqaQEqrdI6zkIh4cCV2D4cykz3TaMG449FyvfbpAIJUCQijKMfssyzIrqIrIrwFvV1XZF9D2SAY5y1AFAYwH6DxhFK8y1qUWMBngpxjXpHDjyxp21/A9A9MZrfZFZg7v0HSjc1DBrEDx0YhTMDMyRpPfmTZwkpmR0xtjD8CWRc36EqbLjP/Jl5B3ByexYvwfiUR9O2MGkPzR/nwIDAQAB",
   "description": "Offline password manager. Autofill logins, generate strong passwords — your vault never leaves your PC. Requires Mynx desktop app.",
   "author": "Matt",
