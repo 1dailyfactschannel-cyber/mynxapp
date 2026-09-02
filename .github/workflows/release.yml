@@ -33,15 +33,22 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      # mynx-native-host идет в инсталлятор как sidecar (bundle.externalBin):
-      # Tauri ждёт файл binaries/mynx-native-host-<target-triple>.exe до бандлинга.
+      # build.rs tauri валидирует externalBin уже на cargo build — поэтому ДО любой
+      # cargo-сборки должна существовать заглушка sidecar-файла; реальный exe
+      # кладём поверх после сборки хоста.
+      - name: Stage sidecar placeholder
+        run: |
+          New-Item -ItemType Directory -Force -Path src-tauri/binaries | Out-Null
+          if (-not (Test-Path src-tauri/binaries/mynx-native-host-x86_64-pc-windows-msvc.exe)) {
+            New-Item -ItemType File -Path src-tauri/binaries/mynx-native-host-x86_64-pc-windows-msvc.exe | Out-Null
+          }
+
       - name: Build native host binary
         working-directory: src-tauri
         run: cargo build --release --bin mynx-native-host
 
-      - name: Stage sidecar binary
+      - name: Stage real sidecar binary
         run: |
-          New-Item -ItemType Directory -Force -Path src-tauri/binaries | Out-Null
           Copy-Item src-tauri/target/release/mynx-native-host.exe `
             src-tauri/binaries/mynx-native-host-x86_64-pc-windows-msvc.exe -Force
 

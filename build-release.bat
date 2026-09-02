@@ -27,6 +27,16 @@ if exist "%VCVARS%" (
 
 set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
 cd /d "%PROJECT_ROOT%"
+
+rem Sidecar для bundle.externalBin: build.rs Tauri требует существования файла
+rem уже при cargo build. Создаем заглушку, собираем реальный хост, кладем поверх.
+if not exist "src-tauri\binaries" mkdir "src-tauri\binaries"
+if not exist "src-tauri\binaries\mynx-native-host-x86_64-pc-windows-msvc.exe" (
+    type nul > "src-tauri\binaries\mynx-native-host-x86_64-pc-windows-msvc.exe" || exit /b 1
+)
+cargo build --release --bin mynx-native-host || exit /b 1
+copy /Y "src-tauri\target\release\mynx-native-host.exe" "src-tauri\binaries\mynx-native-host-x86_64-pc-windows-msvc.exe" >nul || exit /b 1
+
 call npm run tauri-build || exit /b 1
 
 rem --- Опциональный шаг: Authenticode-подпись exe и NSIS-установщика ---
