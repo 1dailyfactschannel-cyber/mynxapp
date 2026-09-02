@@ -20,3 +20,6 @@ extension/store/mock/.profile-*/
 
 # Внутренняя доска задач (переносится в GitHub Projects, P2-7)
 TODO.md
+
+# Sidecar staging area (real exe staged by release scripts, placeholder by build.rs)
+src-tauri/binaries/
