@@ -12,6 +12,9 @@ jobs:
   cargo-audit:
     name: cargo audit
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
     steps:
       - uses: actions/checkout@v4
       # audit-check looks for ./Cargo.lock in the repo root, but the Tauri
