@@ -10,18 +10,25 @@ persistently except session-scoped pending logins.
 
 ## Development install
 
-1. Build the native host binary: `cd src-tauri && cargo build --release`
-   (produces `mynx-native-host.exe`).
+1. Install the Mynx desktop app 1.2.3+ — `mynx-native-host.exe` ships
+   inside the installer (`%LOCALAPPDATA%\Mynx\mynx-native-host.exe`).
+   Alternatively build it yourself: `cd src-tauri && cargo build --release --bin mynx-native-host`.
 2. Open `chrome://extensions`, enable **Developer mode**, click
    **Load unpacked** and select this `extension/` folder.
-3. Note the generated extension ID (under the extension name).
-4. Edit `native-host/com.matt.mynx.native.json`:
-   - set `path` to the absolute path of the built `mynx-native-host.exe`;
-   - set `allowed_origins` to `chrome-extension://<YOUR-EXTENSION-ID>/`.
-5. Apply the registry registration: edit paths in `native-host/register.reg`
-   to point at the edited manifest, then run it (`reg import`).
-6. Start the Mynx desktop app, unlock your vault, and open the extension
-   popup — the status pill should read **Unlocked**.
+3. Copy the generated extension ID (under the extension name).
+4. Register the native host (no admin rights needed):
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File native-host\register-native-host.ps1 `
+     -ExtensionId "<YOUR-EXTENSION-ID>"
+   ```
+
+   The script finds `mynx-native-host.exe`, writes the host manifest to
+   `%LOCALAPPDATA%\Mynx\native-host\` with your extension ID in
+   `allowed_origins`, and registers it for Chrome / Edge / Chromium in HKCU.
+   Pass `-HostPath` if the exe is somewhere non-standard.
+5. Restart the browser, start the Mynx desktop app, unlock your vault, and
+   open the extension popup — the status pill should read **Unlocked**.
 
 ## Publishing to Chrome Web Store
 
@@ -55,6 +62,6 @@ to `manifest.json` — the ID is derived from that key. Do not commit private
 
 - `manifest.json`, `background.js`, `content.js`, `popup.html`, `popup.js` — the extension itself
 - `icons/` — extension icons
-- `native-host/` — native messaging host manifest and registry registration
+- `native-host/register-native-host.ps1` — one-shot native messaging registration (Chrome/Edge/Chromium, HKCU)
 - `store/` — Chrome Web Store listing materials
 - `pack.bat` — builds the uploadable zip
