@@ -332,7 +332,7 @@ async fn process_request(state: Arc<AppStateInner>, request: IpcRequest) -> IpcR
     let key_ok = request
         .key
         .as_deref()
-        .map_or(false, |k| state.ipc_pair_keys.lock().unwrap().contains(k));
+        .is_some_and(|k| state.ipc_pair_keys.lock().unwrap().contains(k));
     if !key_ok {
         return IpcResponse::error("pairing_required");
     }
@@ -433,7 +433,7 @@ async fn process_request(state: Arc<AppStateInner>, request: IpcRequest) -> IpcR
             }
 
             // Сначала наиболее точные совпадения
-            matched.sort_by(|a, b| b.0.cmp(&a.0));
+            matched.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
 
             let list: Vec<serde_json::Value> = matched
                 .into_iter()
@@ -613,7 +613,7 @@ fn load_entries(session: &VaultSession) -> Result<Vec<serde_json::Value>, String
 
 /// Запись не в корзине (корзина помечается полем deletedAt, см. src/stores/vault.ts).
 fn is_active(entry: &serde_json::Value) -> bool {
-    entry.get("deletedAt").map_or(true, |v| v.is_null())
+    entry.get("deletedAt").is_none_or(|v| v.is_null())
 }
 
 /// Собрать объект из выбранных полей записи: (ключ в ответе, ключ в записи).

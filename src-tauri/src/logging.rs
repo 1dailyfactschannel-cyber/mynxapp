@@ -18,6 +18,9 @@ use std::time::Instant;
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Level {
+    // Пока пишутся только WARN/ERROR — INFO для будущих диагностических
+    // сообщений; вариант остаётся частью публичного уровня.
+    #[allow(dead_code)]
     Info,
     Warn,
     Error,

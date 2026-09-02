@@ -34,6 +34,9 @@ pub struct Aes256GcmAead;
 impl Aes256GcmAead {
     /// Encrypt with AES-256-GCM (no additional authenticated data).
     /// Returns: nonce (12 bytes) + ciphertext + tag (16 bytes)
+    /// (production code uses encrypt_with_aad; plain form kept for the
+    /// crypto test-suite)
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn encrypt(key: &[u8; 32], plaintext: &[u8]) -> anyhow::Result<Vec<u8>> {
         Self::encrypt_with_aad(key, plaintext, b"")
     }

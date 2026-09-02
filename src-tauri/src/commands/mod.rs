@@ -388,7 +388,7 @@ pub async fn vault_create(
 
     // Save device key next to vault file
     let dk_path = vault_path.with_extension("safepass.dk");
-    std::fs::write(&dk_path, &device_key).map_err(|e| e.to_string())?;
+    std::fs::write(&dk_path, device_key).map_err(|e| e.to_string())?;
 
     let vault_id = vault_path.to_string_lossy().to_string();
 

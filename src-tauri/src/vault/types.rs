@@ -51,12 +51,12 @@ impl From<&crate::crypto::KdfParams> for KdfParamsSerializable {
     }
 }
 
-impl Into<crate::crypto::KdfParams> for KdfParamsSerializable {
-    fn into(self) -> crate::crypto::KdfParams {
+impl From<KdfParamsSerializable> for crate::crypto::KdfParams {
+    fn from(params: KdfParamsSerializable) -> Self {
         crate::crypto::KdfParams {
-            memory_kb: self.memory_kb,
-            iterations: self.iterations,
-            parallelism: self.parallelism,
+            memory_kb: params.memory_kb,
+            iterations: params.iterations,
+            parallelism: params.parallelism,
         }
     }
 }

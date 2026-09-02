@@ -139,7 +139,7 @@ pub fn main() {
 
             // Global hotkey that raises the window from the tray (persisted in settings.json).
             if let Some(shortcut) = hotkey::effective_shortcut() {
-                if let Err(e) = hotkey::register_shortcut(&app.handle(), &shortcut) {
+                if let Err(e) = hotkey::register_shortcut(app.handle(), &shortcut) {
                     crate::log_warn!("tray hotkey registration failed: {e}");
                 }
             }

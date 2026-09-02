@@ -208,7 +208,7 @@ pub fn open_vault_any(
 }
 
 /// The payload that belongs to the active session layer.
-pub fn active_payload<'a>(vault: &'a VaultFile, is_decoy: bool) -> &'a [u8] {
+pub fn active_payload(vault: &VaultFile, is_decoy: bool) -> &[u8] {
     if is_decoy {
         if let Some(p) = vault.decoy_payload.as_ref() {
             return p;
@@ -362,7 +362,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 
 fn hex_decode(s: &str) -> Result<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return Err(anyhow::anyhow!("bad hex"));
     }
     (0..s.len())
@@ -535,7 +535,7 @@ pub fn disable_hw_key_with_secret(
     secret: &[u8; 32],
     decoy_password: Option<&str>,
 ) -> Result<()> {
-    let session = open_vault(vault, master_password, device_key, Some(&secret))?;
+    let session = open_vault(vault, master_password, device_key, Some(secret))?;
 
     // Перешифровка реального заголовка без hw-секрета
     let kdf_params: KdfParams = vault.header.kdf_params.clone().into();
@@ -549,7 +549,7 @@ pub fn disable_hw_key_with_secret(
 
     // Ложный слот: сохранить, если известен ложный пароль, иначе сбросить
     let decoy_entries = decoy_password
-        .and_then(|dp| open_decoy(vault, dp, device_key, Some(&secret)).ok())
+        .and_then(|dp| open_decoy(vault, dp, device_key, Some(secret)).ok())
         .and_then(|s| decrypt_entries(&s.payload_key, active_payload(vault, true)).ok());
     let (slot, payload) = match (decoy_password, decoy_entries) {
         (Some(dp), Some(entries)) => build_decoy_slot(dp, device_key, None, &entries)?,
@@ -928,7 +928,14 @@ mod tests {
 
         // Header still decrypts and carries the new count
         let session = open_vault(&vault, "pw", &device_key, None).unwrap();
-        let dec = XChaCha20Aead::decrypt(&session.encryption_key, &vault.header.encrypted_header).unwrap();
+        // update_inner_header шифрует заголовок с AAD v2 — расшифровываем
+        // так же, как это делает open-путь (x_decrypt_v2_or_legacy)
+        let dec = XChaCha20Aead::decrypt_with_aad(
+            &session.encryption_key,
+            &vault.header.encrypted_header,
+            AAD_HEADER_V2,
+        )
+        .unwrap();
         let inner: VaultInnerHeader = serde_json::from_slice(&dec).unwrap();
         assert_eq!(inner.entry_count, 7);
     }

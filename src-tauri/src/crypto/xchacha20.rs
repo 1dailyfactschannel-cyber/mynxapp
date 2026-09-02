@@ -13,6 +13,8 @@ pub struct XChaCha20Aead;
 impl XChaCha20Aead {
     /// Encrypt plaintext with XChaCha20-Poly1305 (no additional
     /// authenticated data). Returns: nonce (24 bytes) + ciphertext + tag.
+    /// (production code always binds a role AAD; plain form kept for tests)
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn encrypt(key: &[u8; KEY_SIZE], plaintext: &[u8]) -> anyhow::Result<Vec<u8>> {
         Self::encrypt_with_aad(key, plaintext, b"")
     }
