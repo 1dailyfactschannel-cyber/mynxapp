@@ -14,6 +14,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # audit-check looks for ./Cargo.lock in the repo root, but the Tauri
+      # workspace keeps it in src-tauri/ - copy it up before the scan.
+      - name: Expose src-tauri/Cargo.lock at repo root
+        run: cp src-tauri/Cargo.lock ./Cargo.lock
       - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
