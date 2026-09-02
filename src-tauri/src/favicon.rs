@@ -106,11 +106,10 @@ pub async fn fetch_favicon(url: String) -> Result<FaviconData, String> {
     let host = host_of(&url).ok_or_else(|| "invalid_url".to_string())?;
 
     // Кэш: положительный — на сутки, отрицательный — не кэшируем
-    if let Some(hit) = cache().lock().unwrap().get(&host) {
-        if let Some((data, at)) = hit {
-            if at.elapsed() < CACHE_TTL {
-                return Ok(data.clone());
-            }
+    let cached = cache().lock().unwrap().get(&host).cloned();
+    if let Some(Some((data, at))) = cached {
+        if at.elapsed() < CACHE_TTL {
+            return Ok(data);
         }
     }
 
