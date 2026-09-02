@@ -21,7 +21,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # Node 24: structuredClone умеет клонировать неэкспортируемый
+          # CryptoKey — иначе fake-indexeddb ломает roundtrip-тест
+          # secureStorage (в реальном вебвью проблемы нет, IDB хранит
+          # ключ нативно). Node 20 на runners deprecated.
+          node-version: 24
           cache: npm
       - run: npm ci
       # Type errors fail the build (strict mode, no unused locals).
