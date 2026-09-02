@@ -642,7 +642,7 @@ async fn process_request(state: Arc<AppStateInner>, request: IpcRequest) -> IpcR
                 e.get("updatedAt").and_then(|v| v.as_i64())
             };
             let age_days = |e: &serde_json::Value| -> Option<i64> {
-                changed_at(e).map(|at| ((now_ms - at).max(0) / (24 * 3600 * 1000)) as i64)
+                changed_at(e).map(|at| (now_ms - at).max(0) / (24 * 3600 * 1000))
             };
 
             // Повторы: одинаковый непустой пароль у разных записей
