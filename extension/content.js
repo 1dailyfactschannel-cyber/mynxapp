@@ -87,31 +87,64 @@
 
   function positionIcon(icon, field) {
     const rect = field.getBoundingClientRect();
-    // Зона справа: иконки сайта (origPad) + место под нашу иконку (24px), см. addIcon.
-    const rightZone = field._mynxReserved || 26;
-    icon.style.setProperty("top", `${window.scrollY + rect.top + (rect.height - 18) / 2}px`, "important");
-    icon.style.setProperty("left", `${window.scrollX + rect.right - rightZone}px`, "important");
+    // Поле вне вьюпорта — прячем иконку (при fixed-позиционировании она иначе
+    // осталась бы висеть на экране, пока поле уехало за край).
+    if (
+      rect.width === 0 ||
+      rect.bottom <= 0 ||
+      rect.top >= window.innerHeight ||
+      rect.right <= 0 ||
+      rect.left >= window.innerWidth
+    ) {
+      icon.style.setProperty("display", "none", "important");
+      return;
+    }
+    icon.style.removeProperty("display");
+    // Fixed + координаты вьюпорта: иконка приклеена к полю при любом скролле
+    // и не зависит от transform/filter-контейнеров сайта.
+    // Зона справа: иконки сайта (глаз и т.п.) + место под нашу (24px), см. updatePadding.
+    const rightZone = field._mynxReserved || 40;
+    icon.style.setProperty("top", `${rect.top + (rect.height - 18) / 2}px`, "important");
+    icon.style.setProperty("left", `${rect.right - rightZone}px`, "important");
+  }
+
+  // Сайт резервирует место под свои иконки (глаз и т.п.) через padding-right.
+  // Ставим нашу иконку левее этой зоны и расширяем padding, чтобы текст не уходил под неё.
+  // Пересчитываем при каждом скане: если сайт перезаписал наш паддинг своим
+  // значением (например, появился «глаз»), берём его как новую базу.
+  function updatePadding(field) {
+    const computed = parseFloat(getComputedStyle(field).paddingRight) || 0;
+    let sitePad;
+    if (field._mynxPatched) {
+      const applied = field._mynxAppliedPad || 0;
+      sitePad = Math.abs(computed - applied) > 1 ? computed : field._mynxSitePad || 0;
+    } else {
+      sitePad = computed;
+    }
+    field._mynxPatched = true;
+    field._mynxSitePad = sitePad;
+    // Единая зона справа: max(sitePad,16) + 24 под нашу иконку. Паддинг и
+    // позиция иконки считаются от одного числа — текст не заходит под иконку,
+    // а иконка не наезжает на иконки сайта.
+    const reserved = Math.min(Math.max(sitePad, 16), 120) + 24;
+    field._mynxReserved = reserved;
+    field._mynxAppliedPad = reserved;
+    field.style.setProperty("padding-right", `${reserved}px`, "important");
   }
 
   function addIcon(field) {
     if (field.hasAttribute(PROCESSED_ATTR) && field._mynxIcon && document.contains(field._mynxIcon)) return;
     field.setAttribute(PROCESSED_ATTR, "1");
 
-    // Сайт резервирует место под свои иконки (глаз и т.п.) через padding-right.
-    // Ставим нашу иконку левее этой зоны и расширяем padding, чтобы текст не уходил под неё.
-    const origPad = parseFloat(getComputedStyle(field).paddingRight) || 0;
-    const reserved = Math.min(Math.max(origPad, 8), 120);
-    field._mynxReserved = reserved + 24;
-    field.style.setProperty("padding-right", `${origPad + 24}px`, "important");
-
     const icon = document.createElement("div");
     icon.className = ICON_CLASS;
     icon.innerHTML = LOCK_SVG;
     icon.title = "Mynx: fill login";
     icon.style.cssText =
-      "position:absolute !important; width:18px !important; height:18px !important; " +
+      "position:fixed !important; width:18px !important; height:18px !important; " +
       "cursor:pointer !important; z-index:2147483647 !important; line-height:0 !important; " +
-      "padding:0 !important; margin:0 !important; background:transparent !important;";
+      "padding:0 !important; margin:0 !important; background:transparent !important; " +
+      "user-select:none !important;";
 
     icon.addEventListener("click", (e) => {
       e.preventDefault();
@@ -119,18 +152,28 @@
       onIconClick(field, icon);
     });
 
-    document.body.appendChild(icon);
-    positionIcon(icon, field);
+    document.documentElement.appendChild(icon);
     field._mynxIcon = icon;
+    icon._mynxField = field;
+    updatePadding(field);
+    positionIcon(icon, field);
   }
 
+  // Репозиционирование через rAF: не молотим layout на каждый тик скролла.
+  let rafPending = false;
   function repositionAll() {
-    for (const icon of document.querySelectorAll("." + ICON_CLASS)) {
-      const field = icon._mynxField;
-      if (field && document.contains(field)) {
-        positionIcon(icon, field);
+    if (rafPending) return;
+    rafPending = true;
+    requestAnimationFrame(() => {
+      rafPending = false;
+      for (const icon of document.querySelectorAll("." + ICON_CLASS)) {
+        const field = icon._mynxField;
+        if (field && document.contains(field)) {
+          positionIcon(icon, field);
+        }
       }
-    }
+      positionDropdown();
+    });
   }
 
   // Удаляем иконки удалённых полей и прячем иконки скрытых (после логина поля часто уходят из DOM).
@@ -165,6 +208,11 @@
       const icon = field._mynxIcon;
       if (icon) icon._mynxField = field;
     }
+    // Ключевой фикс «уплывающих» иконок: поле могло сдвинуться (модалка, табы,
+    // SPA-переход) без появления новых полей — перепозиционируем всегда,
+    // заодно пересчитываем зону под иконки сайта.
+    for (const field of targets) updatePadding(field);
+    repositionAll();
   }
 
   // ---------- Dropdown ----------
@@ -193,21 +241,38 @@
     const dd = document.createElement("div");
     dd.id = DROPDOWN_ID;
     dd.style.cssText =
-      "position:absolute !important; z-index:2147483647 !important; min-width:240px !important; " +
+      "position:fixed !important; z-index:2147483647 !important; min-width:240px !important; " +
       "max-width:320px !important; max-height:260px !important; overflow-y:auto !important; " +
       "background:#0a0a0f !important; border:1px solid #1f2937 !important; border-radius:10px !important; " +
       "box-shadow:0 8px 24px rgba(0,0,0,0.6) !important; padding:4px !important; " +
       "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif !important;";
 
-    const rect = anchorField.getBoundingClientRect();
-    dd.style.setProperty("top", `${window.scrollY + rect.bottom + 4}px`, "important");
-    dd.style.setProperty("left", `${window.scrollX + rect.left}px`, "important");
-
-    document.body.appendChild(dd);
+    dd._mynxAnchor = anchorField;
+    document.documentElement.appendChild(dd);
     buildContent(dd);
+    positionDropdown();
 
     document.addEventListener("mousedown", onOutsideClick, true);
     document.addEventListener("keydown", onEscape, true);
+  }
+
+  // Дропдаун следует за своим полем при скролле/ресайзе; если снизу нет места —
+  // раскрывается вверх, чтобы не вылезать за экран.
+  function positionDropdown() {
+    const dd = document.getElementById(DROPDOWN_ID);
+    if (!dd || !dd._mynxAnchor || !document.contains(dd._mynxAnchor)) return;
+    const rect = dd._mynxAnchor.getBoundingClientRect();
+    const left = Math.max(4, Math.min(rect.left, window.innerWidth - 250));
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const spaceAbove = rect.top;
+    dd.style.setProperty("left", `${left}px`, "important");
+    if (spaceBelow >= 280 || spaceBelow >= spaceAbove) {
+      dd.style.removeProperty("bottom");
+      dd.style.setProperty("top", `${rect.bottom + 4}px`, "important");
+    } else {
+      dd.style.removeProperty("top");
+      dd.style.setProperty("bottom", `${window.innerHeight - rect.top + 4}px`, "important");
+    }
   }
 
   function dropdownItem(dd, { title, subtitle, onClick }) {
@@ -364,14 +429,28 @@
   let scanTimer = null;
   function scheduleScan() {
     if (scanTimer) clearTimeout(scanTimer);
-    scanTimer = setTimeout(scanFields, 300);
+    scanTimer = setTimeout(() => {
+      scanFields();
+      // Второй проход после того, как сайт дочинит layout (шрифты, анимации).
+      requestAnimationFrame(repositionAll);
+    }, 300);
   }
 
   function init() {
     scanFields();
+    // capture=true ловит скролл любых внутренних контейнеров, не только страницы.
     window.addEventListener("scroll", repositionAll, true);
     window.addEventListener("resize", repositionAll);
-    new MutationObserver(scheduleScan).observe(document.body, { childList: true, subtree: true });
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("scroll", repositionAll);
+      window.visualViewport.addEventListener("resize", repositionAll);
+    }
+    new MutationObserver(scheduleScan).observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["style", "class"],
+    });
   }
 
   if (document.readyState === "loading") {
