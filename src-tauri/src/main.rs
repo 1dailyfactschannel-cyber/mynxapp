@@ -12,6 +12,7 @@ mod commands;
 mod api;
 mod clipboard;
 mod ipc;
+mod logging;
 mod memprotect;
 mod ratelimit;
 mod hotkey;
@@ -28,7 +29,7 @@ use commands::{
     vault_backup, vault_set_decoy_password, vault_remove_decoy, save_png_file,
     vault_hw_key_status, vault_decoy_status, vault_enable_hw_key, vault_disable_hw_key,
     secure_copy, secure_paste, secure_copy_available,
-    get_api_token, get_device_key, set_lock_on_hide, set_app_language,
+    get_api_token, get_device_key, set_lock_on_hide, set_app_language, rotate_api_token,
     AppState,
 };
 use clipboard::{clipboard_history_set_enabled, clipboard_set_secure};
@@ -75,20 +76,25 @@ pub fn main() {
                 .build(),
         )
         .setup(move |app| {
+            // Файловый лог (P2-13): уровни + ротация в app_data_dir/logs.
+            if let Ok(data_dir) = app.path().app_data_dir() {
+                logging::init(data_dir.join("logs"));
+            }
+
             // AppHandle нужен IPC-потоку, чтобы показывать pairing-диалог.
             *app.state::<AppState>().inner.app_handle.lock().unwrap() = Some(app.handle().clone());
 
             let api_state = api_state.clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = api::run_api_server(api_state).await {
-                    eprintln!("API server error: {}", e);
+                    crate::log_error!("API server error: {e}");
                 }
             });
 
             let ipc_state = ipc_state.clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = ipc::run_ipc_server(ipc_state).await {
-                    eprintln!("IPC server error: {}", e);
+                    crate::log_error!("IPC server error: {e}");
                 }
             });
 
@@ -130,7 +136,7 @@ pub fn main() {
             // Global hotkey that raises the window from the tray (persisted in settings.json).
             if let Some(shortcut) = hotkey::effective_shortcut() {
                 if let Err(e) = hotkey::register_shortcut(&app.handle(), &shortcut) {
-                    eprintln!("tray hotkey registration failed: {}", e);
+                    crate::log_warn!("tray hotkey registration failed: {e}");
                 }
             }
 
@@ -180,8 +186,10 @@ pub fn main() {
             clipboard_history_set_enabled,
             save_png_file,
             get_api_token,
+            rotate_api_token,
             get_device_key,
             set_lock_on_hide,
+            set_autolock_minutes,
             set_app_language,
             auto_type_credentials,
             auto_type_text,

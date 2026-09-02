@@ -3,13 +3,30 @@ chcp 65001 >nul
 rem Сборка через официальный Tauri CLI: вшивает фронтенд в exe (prod-режим).
 rem Прямой cargo build --release НЕ вшивает assets — exe потом требует devUrl!
 rem
+rem Скрипт автономен: корень проекта определяется по расположению файла
+ rem (%~dp0), а не захардкоженным путям конкретной машины.
+rem
 rem Подпись Windows-бинарников (Authenticode): купить OV/EV code-signing
 rem сертификат, установить в хранилище Windows и задать SIGN_CERT_THUMBPRINT —
 rem ниже отработает опциональный шаг signtool. Альтернатива: вписать thumbprint
 rem в src-tauri\tauri.conf.json (bundle.windows.certificateThumbprint).
-call "C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >nul
-set "PATH=%USERPROFILE%\.cargo\bin;C:\Users\Matt\AppData\Local\Programs\kimi-desktop\resources\resources\runtime;%PATH%"
-cd /d "D:\Kimi проекты\Safepass"
+
+setlocal
+set "PROJECT_ROOT=%~dp0"
+if "%PROJECT_ROOT:~-1%"=="\" set "PROJECT_ROOT=%PROJECT_ROOT:~0,-1%"
+
+rem Visual Studio Build Tools: стандартное расположение, но необязательны —
+rem cargo сам находит MSVC через vswhere, если vcvars не найден.
+set "VCVARS=%ProgramFiles(x86)%\Microsoft Visual Studio\2019\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
+if not exist "%VCVARS%" set "VCVARS=%ProgramFiles%\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
+if exist "%VCVARS%" (
+    call "%VCVARS%" >nul
+) else (
+    echo [build] vcvars64.bat не найден — надеемся на самостоятельную регистрацию MSVC у cargo
+)
+
+set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
+cd /d "%PROJECT_ROOT%"
 call npm run tauri-build || exit /b 1
 
 rem --- Опциональный шаг: Authenticode-подпись exe и NSIS-установщика ---
@@ -30,4 +47,5 @@ if defined SIGN_CERT_THUMBPRINT (
 )
 
 echo.
-echo === Готово: D:\Kimi проекты\Safepass\src-tauri\target\release\mynx.exe ===
+echo === Готово: %PROJECT_ROOT%\src-tauri\target\release\mynx.exe ===
+endlocal

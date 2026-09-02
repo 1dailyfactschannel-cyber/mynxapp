@@ -5,7 +5,45 @@ use crate::crypto::{
 use crate::vault::types::*;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::io::Write;
 use std::path::Path;
+use std::sync::Mutex;
+
+/* ------------------------------------------------------------------ */
+/* AAD-привязка (v2)                                                    */
+/* ------------------------------------------------------------------ */
+
+/// AAD v2: каждый шифротекст привязан к своей роли в формате файла, поэтому
+/// блок нельзя пересадить между заголовком, payload, ложным слотом и
+/// keyfile — AEAD-проверка не пройдёт. Файлы, записанные до этого изменения,
+/// использовали пустой AAD: расшифровка сначала пробует v2, затем падает
+/// обратно на legacy-блок без AAD (обратная совместимость).
+pub const AAD_HEADER_V2: &[u8] = b"mynx:v2:header";
+pub const AAD_PAYLOAD_V2: &[u8] = b"mynx:v2:payload";
+pub const AAD_DECOY_HEADER_V2: &[u8] = b"mynx:v2:decoy-header";
+pub const AAD_EXPORT_V2: &[u8] = b"mynx:v2:export";
+pub const AAD_HW_KEYFILE_V2: &[u8] = b"mynx:v2:hw-keyfile";
+
+/// Расшифровка XChaCha-блока: сначала новый формат (AAD v2), затем legacy.
+pub(crate) fn x_decrypt_v2_or_legacy(key: &[u8; 32], ciphertext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
+    XChaCha20Aead::decrypt_with_aad(key, ciphertext, aad)
+        .or_else(|_| XChaCha20Aead::decrypt(key, ciphertext))
+}
+
+/// Расшифровка AES-256-GCM блока: сначала новый формат (AAD v2), затем legacy.
+pub(crate) fn aes_decrypt_v2_or_legacy(key: &[u8; 32], ciphertext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
+    Aes256GcmAead::decrypt_with_aad(key, ciphertext, aad)
+        .or_else(|_| Aes256GcmAead::decrypt(key, ciphertext))
+}
+
+/* ------------------------------------------------------------------ */
+/* Сериализация записи vault-файла                                      */
+/* ------------------------------------------------------------------ */
+
+/// Сериализует ВСЕ записи vault-файла в процессе: последовательность
+/// load → modify → save не должна перемешиваться между HTTP API, IPC и
+/// потоками UI, иначе одно сохранение молча затирает записи другого.
+pub static VAULT_WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 /// Create a new vault file
 pub fn create_vault(
@@ -48,15 +86,17 @@ pub fn create_vault(
 
     // 6. Serialize and encrypt inner header with XChaCha20-Poly1305 (outer layer)
     let inner_header_bytes = serde_json::to_vec(&inner_header)?;
-    let encrypted_header = XChaCha20Aead::encrypt(&enc_key,
+    let encrypted_header = XChaCha20Aead::encrypt_with_aad(&enc_key,
         &inner_header_bytes,
+        AAD_HEADER_V2,
     )?;
 
     // 7. Empty entries array encrypted with AES-256-GCM (inner layer, fast)
     let empty_payload = b"[]".to_vec(); // Empty entries JSON array
-    let encrypted_payload = Aes256GcmAead::encrypt(
+    let encrypted_payload = Aes256GcmAead::encrypt_with_aad(
         &payload_key_arr,
         &empty_payload,
+        AAD_PAYLOAD_V2,
     )?;
 
     // 8. Build vault file
@@ -110,9 +150,10 @@ pub fn open_vault(
     )?;
 
     // 3. Decrypt inner header with XChaCha20
-    let decrypted_header = XChaCha20Aead::decrypt(
+    let decrypted_header = x_decrypt_v2_or_legacy(
         &enc_key,
         &vault.header.encrypted_header,
+        AAD_HEADER_V2,
     )?;
     let inner_header: VaultInnerHeader = serde_json::from_slice(&decrypted_header)?;
 
@@ -143,7 +184,8 @@ fn open_decoy(
     let primary_key = derive_key(password.as_bytes(), &slot.salt, &kdf_params)?;
     let enc_key = derive_encryption_key_hw(&primary_key, device_key, hw_key, b"safepass-v1-decoy-key")?;
 
-    let decrypted_header = XChaCha20Aead::decrypt(&enc_key, &slot.encrypted_header)?;
+    let decrypted_header =
+        x_decrypt_v2_or_legacy(&enc_key, &slot.encrypted_header, AAD_DECOY_HEADER_V2)?;
     let inner_header: VaultInnerHeader = serde_json::from_slice(&decrypted_header)?;
 
     let mut session = VaultSession::new("vault-1".to_string(), enc_key, inner_header.payload_key);
@@ -218,7 +260,8 @@ fn build_decoy_slot_with_key(enc_key: &[u8; 32], entries_json: &str) -> Result<(
         payload_key,
         decoy_enabled: false,
     };
-    let encrypted_header = XChaCha20Aead::encrypt(enc_key, &serde_json::to_vec(&inner_header)?)?;
+    let encrypted_header =
+        XChaCha20Aead::encrypt_with_aad(enc_key, &serde_json::to_vec(&inner_header)?, AAD_DECOY_HEADER_V2)?;
     let encrypted_payload = encrypt_entries(&payload_key, entries_json)?;
 
     Ok((
@@ -287,12 +330,12 @@ fn update_decoy_enabled(
     enc_key: &[u8; 32],
     enabled: bool,
 ) -> Result<()> {
-    let decrypted = XChaCha20Aead::decrypt(enc_key, &vault.header.encrypted_header)?;
+    let decrypted = x_decrypt_v2_or_legacy(enc_key, &vault.header.encrypted_header, AAD_HEADER_V2)?;
     let mut inner: VaultInnerHeader = serde_json::from_slice(&decrypted)?;
     inner.decoy_enabled = enabled;
     inner.modified_at = chrono::Utc::now().timestamp();
     vault.header.encrypted_header =
-        XChaCha20Aead::encrypt(enc_key, &serde_json::to_vec(&inner)?)?;
+        XChaCha20Aead::encrypt_with_aad(enc_key, &serde_json::to_vec(&inner)?, AAD_HEADER_V2)?;
     Ok(())
 }
 
@@ -371,7 +414,7 @@ pub fn write_hw_keyfile(
 ) -> Result<std::path::PathBuf> {
     std::fs::create_dir_all(dir)?;
     let wrap_key = hw_wrap_key(device_key, id)?;
-    let wrapped = XChaCha20Aead::encrypt(&wrap_key, secret)?;
+    let wrapped = XChaCha20Aead::encrypt_with_aad(&wrap_key, secret, AAD_HW_KEYFILE_V2)?;
     let kf = HwKeyFile {
         magic: HW_KEYFILE_MAGIC.to_string(),
         id: id.to_string(),
@@ -400,7 +443,7 @@ pub fn read_hw_keyfile(
     if let Some(wrapped_hex) = kf.wrapped.as_deref() {
         let wrap_key = hw_wrap_key(device_key, expected_id)?;
         let blob = hex_decode(wrapped_hex)?;
-        let secret = XChaCha20Aead::decrypt(&wrap_key, &blob)?;
+        let secret = x_decrypt_v2_or_legacy(&wrap_key, &blob, AAD_HW_KEYFILE_V2)?;
         return secret
             .as_slice()
             .try_into()
@@ -460,8 +503,10 @@ pub fn enable_hw_key(
     let kdf_params: KdfParams = vault.header.kdf_params.clone().into();
     let primary = derive_key(master_password.as_bytes(), &vault.header.salt, &kdf_params)?;
     let new_enc = derive_encryption_key_hw(&primary, device_key, Some(&secret), b"safepass-v1-enc-key")?;
-    let decrypted = XChaCha20Aead::decrypt(&session.encryption_key, &vault.header.encrypted_header)?;
-    vault.header.encrypted_header = XChaCha20Aead::encrypt(&new_enc, &decrypted)?;
+    let decrypted =
+        x_decrypt_v2_or_legacy(&session.encryption_key, &vault.header.encrypted_header, AAD_HEADER_V2)?;
+    vault.header.encrypted_header =
+        XChaCha20Aead::encrypt_with_aad(&new_enc, &decrypted, AAD_HEADER_V2)?;
     vault.header.hw_key = Some(HwKeyInfo {
         keyfile_id: keyfile_id.clone(),
     });
@@ -496,8 +541,10 @@ pub fn disable_hw_key_with_secret(
     let kdf_params: KdfParams = vault.header.kdf_params.clone().into();
     let primary = derive_key(master_password.as_bytes(), &vault.header.salt, &kdf_params)?;
     let new_enc = derive_encryption_key(&primary, device_key, b"safepass-v1-enc-key")?;
-    let decrypted = XChaCha20Aead::decrypt(&session.encryption_key, &vault.header.encrypted_header)?;
-    vault.header.encrypted_header = XChaCha20Aead::encrypt(&new_enc, &decrypted)?;
+    let decrypted =
+        x_decrypt_v2_or_legacy(&session.encryption_key, &vault.header.encrypted_header, AAD_HEADER_V2)?;
+    vault.header.encrypted_header =
+        XChaCha20Aead::encrypt_with_aad(&new_enc, &decrypted, AAD_HEADER_V2)?;
     vault.header.hw_key = None;
 
     // Ложный слот: сохранить, если известен ложный пароль, иначе сбросить
@@ -526,11 +573,12 @@ pub fn update_decoy_inner_header(
         .decoy
         .as_mut()
         .ok_or_else(|| anyhow::anyhow!("no decoy slot"))?;
-    let decrypted = XChaCha20Aead::decrypt(enc_key, &slot.encrypted_header)?;
+    let decrypted = x_decrypt_v2_or_legacy(enc_key, &slot.encrypted_header, AAD_DECOY_HEADER_V2)?;
     let mut inner: VaultInnerHeader = serde_json::from_slice(&decrypted)?;
     inner.entry_count = entry_count;
     inner.modified_at = chrono::Utc::now().timestamp();
-    slot.encrypted_header = XChaCha20Aead::encrypt(enc_key, &serde_json::to_vec(&inner)?)?;
+    slot.encrypted_header =
+        XChaCha20Aead::encrypt_with_aad(enc_key, &serde_json::to_vec(&inner)?, AAD_DECOY_HEADER_V2)?;
     Ok(())
 }
 
@@ -660,11 +708,35 @@ pub fn load_vault_file(path: &Path) -> Result<VaultFile> {
     Ok(vault)
 }
 
-/// Serialize and atomically write a vault file (tmp + rename)
+/// Serialize and atomically write a vault file:
+/// tmp → fsync → keep a .bak of the previous copy → rename.
+/// The write is serialised with VAULT_WRITE_LOCK (see save_entries_to_vault).
 pub fn save_vault_file(path: &Path, vault: &VaultFile) -> Result<()> {
+    let guard = VAULT_WRITE_LOCK
+        .lock()
+        .map_err(|_| anyhow::anyhow!("vault write lock poisoned"))?;
+    let result = save_vault_file_locked(path, vault);
+    drop(guard);
+    result
+}
+
+/// save_vault_file without taking VAULT_WRITE_LOCK — for callers that
+/// already hold it (e.g. save_entries_to_vault wraps load→modify→save).
+fn save_vault_file_locked(path: &Path, vault: &VaultFile) -> Result<()> {
     let bytes = serde_json::to_vec(vault)?;
     let tmp_path = path.with_extension("safepass.tmp");
-    std::fs::write(&tmp_path, &bytes)?;
+    {
+        let mut f = std::fs::File::create(&tmp_path)?;
+        f.write_all(&bytes)?;
+        // fsync: данные и метаданные реально на диске до rename —
+        // при сбое питания/диска не остаёмся с «пустым» сейвом.
+        f.sync_all()?;
+    }
+    // .bak: предыдущая заведомо целая копия — страховка от сбоя записи.
+    let bak_path = path.with_extension("safepass.bak");
+    if path.exists() {
+        let _ = std::fs::copy(path, &bak_path);
+    }
     std::fs::rename(&tmp_path, path)?;
     Ok(())
 }
@@ -682,7 +754,7 @@ pub fn normalize_entries_json(decrypted: &[u8]) -> String {
 
 /// Decrypt the vault payload with the payload key → entries JSON
 pub fn decrypt_entries(payload_key: &[u8; 32], encrypted_payload: &[u8]) -> Result<String> {
-    let decrypted = Aes256GcmAead::decrypt(payload_key, encrypted_payload)?;
+    let decrypted = aes_decrypt_v2_or_legacy(payload_key, encrypted_payload, AAD_PAYLOAD_V2)?;
     Ok(normalize_entries_json(&decrypted))
 }
 
@@ -692,7 +764,7 @@ pub fn encrypt_entries(payload_key: &[u8; 32], entries_json: &str) -> Result<Vec
     if !value.is_array() {
         return Err(anyhow::anyhow!("entries payload must be a JSON array"));
     }
-    Aes256GcmAead::encrypt(payload_key, entries_json.as_bytes())
+    Aes256GcmAead::encrypt_with_aad(payload_key, entries_json.as_bytes(), AAD_PAYLOAD_V2)
 }
 
 /// Update inner header fields (entry_count, modified_at), re-encrypting it
@@ -702,12 +774,12 @@ pub fn update_inner_header(
     enc_key: &[u8; 32],
     entry_count: u32,
 ) -> Result<()> {
-    let decrypted = XChaCha20Aead::decrypt(enc_key, &vault.header.encrypted_header)?;
+    let decrypted = x_decrypt_v2_or_legacy(enc_key, &vault.header.encrypted_header, AAD_HEADER_V2)?;
     let mut inner: VaultInnerHeader = serde_json::from_slice(&decrypted)?;
     inner.entry_count = entry_count;
     inner.modified_at = chrono::Utc::now().timestamp();
     vault.header.encrypted_header =
-        XChaCha20Aead::encrypt(enc_key, &serde_json::to_vec(&inner)?)?;
+        XChaCha20Aead::encrypt_with_aad(enc_key, &serde_json::to_vec(&inner)?, AAD_HEADER_V2)?;
     Ok(())
 }
 
@@ -731,6 +803,13 @@ pub fn save_entries_to_vault(
     is_decoy: bool,
     entries_json: &str,
 ) -> Result<()> {
+    // Load → modify → save под общим замком: иначе одновременные сохранения
+    // из HTTP API, IPC и UI читают один и тот же файл и последнее записи
+    // другого канала затирает (потеря данных).
+    let guard = VAULT_WRITE_LOCK
+        .lock()
+        .map_err(|_| anyhow::anyhow!("vault write lock poisoned"))?;
+
     let encrypted_payload = encrypt_entries(payload_key, entries_json)?;
     let entry_count = count_json_array(entries_json);
 
@@ -745,7 +824,9 @@ pub fn save_entries_to_vault(
         vault.payload = encrypted_payload;
     }
 
-    save_vault_file(vault_path, &vault)
+    let result = save_vault_file_locked(vault_path, &vault);
+    drop(guard);
+    result
 }
 
 /// Build a portable encrypted export file.
@@ -755,7 +836,7 @@ pub fn build_export(entries_json: &str, master_password: &str) -> Result<Vec<u8>
     let salt = CryptoModule::generate_salt()?;
     let kdf_params = KdfParams::default();
     let export_key = derive_key(master_password.as_bytes(), &salt, &kdf_params)?;
-    let payload = XChaCha20Aead::encrypt(&export_key, entries_json.as_bytes())?;
+    let payload = XChaCha20Aead::encrypt_with_aad(&export_key, entries_json.as_bytes(), AAD_EXPORT_V2)?;
     let export = ExportFile::new(
         salt,
         KdfParamsSerializable::from(&kdf_params),
@@ -767,6 +848,21 @@ pub fn build_export(entries_json: &str, master_password: &str) -> Result<Vec<u8>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_legacy_empty_aad_still_opens() {
+        // Vault-файлы, созданные до введения AAD v2, обязаны открываться:
+        // шифруем «по-старому» (пустой AAD) и расшифровываем через
+        // v2-or-legacy хелпер.
+        let key = [0x11u8; 32];
+        let legacy_header = XChaCha20Aead::encrypt(&key, b"old-inner-header").unwrap();
+        let dec = x_decrypt_v2_or_legacy(&key, &legacy_header, AAD_HEADER_V2).unwrap();
+        assert_eq!(dec, b"old-inner-header".to_vec());
+
+        let legacy_payload = Aes256GcmAead::encrypt(&key, b"[{}").unwrap();
+        let dec2 = aes_decrypt_v2_or_legacy(&key, &legacy_payload, AAD_PAYLOAD_V2).unwrap();
+        assert_eq!(dec2, b"[{}".to_vec());
+    }
 
     #[test]
     fn test_create_and_open_vault() {

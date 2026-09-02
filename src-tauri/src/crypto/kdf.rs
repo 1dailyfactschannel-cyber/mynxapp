@@ -26,14 +26,20 @@ impl Default for KdfParams {
 }
 
 impl KdfParams {
-    pub fn to_argon2_params(&self) -> argon2::Params {
-        argon2::Params::new(
+    /// Validate KDF parameters and build Argon2 params.
+    ///
+    /// SECURITY: this used to `.expect()` on invalid input. The parameters
+    /// come from the (attacker-influencable) vault header, so a forged or
+    /// corrupted header with absurd values (e.g. memory_kb = u32::MAX)
+    /// crashed the whole process instead of failing the unlock. Now the
+    /// error propagates and the caller returns "wrong_password"/"bad vault".
+    pub fn to_argon2_params(&self) -> anyhow::Result<argon2::Params> {
+        Ok(argon2::Params::new(
             self.memory_kb,
             self.iterations,
             self.parallelism,
             Some(KEY_LENGTH),
-        )
-        .expect("valid argon2 params")
+        )?)
     }
 }
 
@@ -42,7 +48,7 @@ pub fn derive_key(password: &[u8], salt: &[u8], params: &KdfParams) -> anyhow::R
     let argon2 = Argon2::new(
         argon2::Algorithm::Argon2id,
         argon2::Version::V0x13,
-        params.to_argon2_params(),
+        params.to_argon2_params()?,
     );
 
     let salt_str = SaltString::encode_b64(salt)

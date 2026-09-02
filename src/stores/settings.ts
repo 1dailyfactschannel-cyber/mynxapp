@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { invoke } from "@tauri-apps/api/core";
 
 interface SettingsState {
   /** Автоблокировка, минуты бездействия */
@@ -128,3 +129,32 @@ export function applyGlassIntensity(value: number, isDark: boolean) {
   const alpha = isDark ? 0.01 + v * 0.06 : 0.35 + v * 0.6;
   document.documentElement.style.setProperty("--glass-alpha", alpha.toFixed(3));
 }
+
+/* ------------------------------------------------------------------ */
+/* Синхронизация безопасных настроек в бэкенд                           */
+/* ------------------------------------------------------------------ */
+
+function pushAutolock(minutes: number) {
+  invoke("set_autolock_minutes", { minutes: Math.max(0, Math.round(minutes)) }).catch(() => {
+    /* нет бэкенда (тесты/статика) — молча игнорируем */
+  });
+}
+
+function pushLockOnHide(enabled: boolean) {
+  invoke("set_lock_on_hide", { enabled }).catch(() => {
+    /* нет бэкенда — молча игнорируем */
+  });
+}
+
+// Бэкенд держит свою копию таймаута автоблокировки (AppStateInner::
+// enforce_autolock) и сам гасит сессию по простою: фронтовый таймер
+// в вебвью обходится сном системы или подменой фронта.
+useSettingsStore.subscribe((state, prev) => {
+  if (state.autoLockMinutes !== prev.autoLockMinutes) pushAutolock(state.autoLockMinutes);
+  if (state.lockOnMinimize !== prev.lockOnMinimize) pushLockOnHide(state.lockOnMinimize);
+});
+
+// Стартовая синхронизация: сохранённые настройки могут отличаться
+// от дефолтов бэкенда после рестарта приложения.
+pushAutolock(useSettingsStore.getState().autoLockMinutes);
+pushLockOnHide(useSettingsStore.getState().lockOnMinimize);

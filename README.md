@@ -1,5 +1,9 @@
 # Mynx
 
+[![Security CI](https://github.com/1dailyfactschannel-cyber/mynxapp/actions/workflows/security.yml/badge.svg)](https://github.com/1dailyfactschannel-cyber/mynxapp/actions/workflows/security.yml)
+[![Frontend tests](https://github.com/1dailyfactschannel-cyber/mynxapp/actions/workflows/frontend-tests.yml/badge.svg)](https://github.com/1dailyfactschannel-cyber/mynxapp/actions/workflows/frontend-tests.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 **Mynx** — полностью офлайн-менеджер паролей для Windows (на Linux — базовый режим). Никакого облака, синхронизации, аккаунтов и подписок: хранилище — один зашифрованный файл на вашем компьютере.
 
 Текущая версия: **1.2.2** (браузерное расширение **1.0.3**).
@@ -71,4 +75,4 @@ Vault — файл `.safepass` в папке `vaults/` рядом с испол�
 
 ## Лицензия
 
-MIT.
+MIT — полный текст в файле [LICENSE](LICENSE).

@@ -17,3 +17,6 @@ src-tauri/backups/
 .tauri/
 *.key
 extension/store/mock/.profile-*/
+
+# Внутренняя доска задач (переносится в GitHub Projects, P2-7)
+TODO.md

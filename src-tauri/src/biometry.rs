@@ -6,6 +6,12 @@
 //! verifies the user with UserConsentVerifier (Hello face/fingerprint/PIN)
 //! and rebuilds the session from the stored key — no password prompt.
 //!
+//! P1-12: when Microsoft Passport is available the stored key is WRAPPED —
+//! encrypted with a key derived from a KeyCredential signature, so reading
+//! the Credential Manager entry directly (any process of the same user)
+//! yields an unusable blob; unwrapping always shows the Hello prompt.
+//! Legacy entries (plain hex) are still accepted and migrated on next save.
+//!
 //! The master password itself is NEVER stored: only the derived encryption
 //! key, and only inside the OS credential locker. Failed Hello verifications
 //! feed the same per-vault rate-limit tracker as password failures, so the
@@ -13,24 +19,37 @@
 
 use std::path::Path;
 use tauri::State;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::commands::{
     count_entries, load_device_key, AppState, VaultIdRequest, VaultUnlockResponse,
 };
-use crate::crypto::XChaCha20Aead;
+use crate::crypto::Aes256GcmAead;
 use crate::vault::operations::{active_payload, decrypt_entries, load_vault_file};
 use crate::vault::types::{VaultInnerHeader, VaultSession};
 
 const KEYRING_SERVICE: &str = "mynx";
 
+/* ------------------------------------------------------------------ */
+/* Microsoft Passport: Hello-обёртка ключа сессии (P1-12)               */
+/* ------------------------------------------------------------------ */
+
+// Раньше ключ сессии лежал в Credential Manager открытым hex-ом: любой
+// процесс того же пользователя мог вычитать его через CredRead БЕЗ
+// биометрии. Теперь при включении Hello ключ шифруется AES-256-GCM
+// ключом, выведенным из подписи Microsoft Passport (KeyCredential):
+// подпись фиксированного challenge детерминирована (RSA-PKCS1), а
+// RequestSignAsync всегда показывает Hello-промпт — без лица/отпечатка/
+// PIN обёртку не открыть даже с прямым доступом к Credential Manager.
+// Старые записи (открытый hex) продолжают читаться — legacy-путь ниже.
+
+const PASSPORT_BLOB_PREFIX: &str = "mynx-passport-v1:";
+const PASSPORT_SALT: &[u8] = b"mynx-passport-wrap-v1";
+const PASSPORT_AAD: &[u8] = b"mynx:v2:passport-wrap";
+
 fn entry(vault_id: &str) -> Result<keyring::Entry, String> {
     keyring::Entry::new(KEYRING_SERVICE, &format!("vault/{}", vault_id))
         .map_err(|e| e.to_string())
-}
-
-fn key_to_hex(key: &[u8; 32]) -> String {
-    key.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
 fn key_from_hex(hex: &str) -> Result<[u8; 32], String> {
@@ -43,6 +62,145 @@ fn key_from_hex(hex: &str) -> Result<[u8; 32], String> {
         key[i] = u8::from_str_radix(s, 16).map_err(|_| "biometry_key_invalid".to_string())?;
     }
     Ok(key)
+}
+
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn hex_decode(s: &str) -> Option<Vec<u8>> {
+    if s.len() % 2 != 0 || s.len() < 2 {
+        return None;
+    }
+    (0..s.len() / 2)
+        .map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).ok())
+        .collect()
+}
+
+fn passport_credential_name(vault_id: &str) -> String {
+    // В имени credential допустимы только буквы/цифры/точка/дефис.
+    let safe: String = vault_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("mynx.wrap.{safe}")
+}
+
+fn passport_challenge(vault_id: &str) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(vault_id.as_bytes());
+    hasher.update(b"mynx-passport-challenge-v1");
+    hasher.finalize().into()
+}
+
+fn passport_supported() -> bool {
+    use windows::Security::Credentials::KeyCredentialManager;
+    KeyCredentialManager::IsSupportedAsync()
+        .and_then(|op| op.get())
+        .unwrap_or(false)
+}
+
+/// Подписать фиксированный challenge ключом Microsoft Passport.
+/// Показывает Hello-промпт (при создании — enrollment).
+/// create=true создаёт credential при отсутствии (ReplaceExisting);
+/// create=false только открывает существующий (NotFound → биометрия не включена).
+fn passport_sign(credential_name: &str, create: bool, challenge: &[u8]) -> Result<Vec<u8>, String> {
+    use windows::Security::Credentials::{
+        KeyCredentialCreationOption, KeyCredentialManager, KeyCredentialStatus,
+    };
+    use windows::Security::Cryptography::CryptographicBuffer;
+    use windows::core::Array;
+
+    let name = windows::core::HSTRING::from(credential_name);
+    let retrieval = if create {
+        KeyCredentialManager::RequestCreateAsync(
+            &name,
+            KeyCredentialCreationOption::ReplaceExisting,
+        )
+        .map_err(|e| format!("biometry_passport_create: {e}"))?
+        .get()
+        .map_err(|e| format!("biometry_passport_create: {e}"))?
+    } else {
+        KeyCredentialManager::OpenAsync(&name)
+            .map_err(|e| format!("biometry_passport_open: {e}"))?
+            .get()
+            .map_err(|e| format!("biometry_passport_open: {e}"))?
+    };
+
+    let status = retrieval.Status().map_err(|e| e.to_string())?;
+    if status != KeyCredentialStatus::Success {
+        return Err(match status {
+            KeyCredentialStatus::UserCanceled => "biometry_cancelled".to_string(),
+            KeyCredentialStatus::NotFound => "biometry_not_enabled".to_string(),
+            _ => "biometry_passport_failed".to_string(),
+        });
+    }
+    let credential = retrieval.Credential().map_err(|e| e.to_string())?;
+
+    let input = CryptographicBuffer::CreateFromByteArray(challenge)
+        .map_err(|e| e.to_string())?;
+    let signature = credential
+        .RequestSignAsync(&input)
+        .map_err(|e| e.to_string())?
+        .get()
+        .map_err(|e| e.to_string())?;
+
+    let mut sig_bytes = Array::<u8>::new();
+    CryptographicBuffer::CopyToByteArray(&signature, &mut sig_bytes)
+        .map_err(|e| e.to_string())?;
+    Ok(sig_bytes.to_vec())
+}
+
+/// Ключ обёртки: HKDF-SHA256 от детерминированной подписи паспорта.
+fn passport_wrap_key(vault_id: &str, signature: &[u8]) -> Result<Zeroizing<Vec<u8>>, String> {
+    let okm = crate::crypto::derive_key(PASSPORT_SALT, signature, vault_id.as_bytes(), 32)
+        .map_err(|e| e.to_string())?;
+    Ok(Zeroizing::new(okm))
+}
+
+/// Зашифровать ключ сессии под Hello-обёртку. Возвращает blob для keyring.
+fn passport_seal(vault_id: &str, enc_key: &[u8; 32], create: bool) -> Result<String, String> {
+    let signature = passport_sign(
+        &passport_credential_name(vault_id),
+        create,
+        &passport_challenge(vault_id),
+    )?;
+    let wrap = passport_wrap_key(vault_id, &signature)?;
+    let key: &[u8; 32] = wrap
+        .as_slice()
+        .try_into()
+        .map_err(|_| "biometry_key_invalid".to_string())?;
+    let blob = Aes256GcmAead::encrypt_with_aad(key, enc_key, PASSPORT_AAD)
+        .map_err(|e| e.to_string())?;
+    Ok(format!("{PASSPORT_BLOB_PREFIX}{}", bytes_to_hex(&blob)))
+}
+
+/// Расшифровать ключ сессии из blob-обёртки. Показывает Hello-промпт.
+fn passport_unwrap(vault_id: &str, blob_hex: &str) -> Result<[u8; 32], String> {
+    let blob = hex_decode(blob_hex).ok_or("biometry_blob_invalid".to_string())?;
+    if blob.len() < 12 + 16 {
+        return Err("biometry_blob_invalid".to_string());
+    }
+    let signature = passport_sign(
+        &passport_credential_name(vault_id),
+        false,
+        &passport_challenge(vault_id),
+    )?;
+    let wrap = passport_wrap_key(vault_id, &signature)?;
+    let key: &[u8; 32] = wrap
+        .as_slice()
+        .try_into()
+        .map_err(|_| "biometry_key_invalid".to_string())?;
+    let plain = Aes256GcmAead::decrypt_with_aad(key, &blob, PASSPORT_AAD)
+        .map_err(|_| "biometry_key_invalid".to_string())?;
+    plain.try_into().map_err(|_| "biometry_key_invalid".to_string())
 }
 
 fn hello_available() -> bool {
@@ -70,11 +228,19 @@ fn hello_verify(message: &str) -> Result<(), String> {
 /// Refresh the stored key after a master password change. No-op when
 /// Hello unlock is not enabled for this vault.
 pub fn refresh_stored_key(vault_id: &str, enc_key: &[u8; 32]) {
-    if let Ok(e) = entry(vault_id) {
-        if e.get_password().is_ok() {
-            let _ = e.set_password(&key_to_hex(enc_key));
-        }
-    }
+    let Ok(e) = entry(vault_id) else { return };
+    let Ok(stored) = e.get_password() else { return };
+
+    let new_value: String = if stored.starts_with(PASSPORT_BLOB_PREFIX) {
+        // Перезаворачиваем новый ключ той же Passport-обёрткой (create=false:
+        // credential уже существует, один Hello-промпт). Если промпт отклонён
+        // или Passport недоступен — откатываемся на legacy-hex, чтобы смена
+        // мастер-пароля не сломала разблокировку; Hello можно перевключить.
+        passport_seal(vault_id, enc_key, false).unwrap_or_else(|_| bytes_to_hex(enc_key))
+    } else {
+        bytes_to_hex(enc_key)
+    };
+    let _ = e.set_password(&new_value);
 }
 
 /// Windows Hello available on this machine (face/fingerprint/PIN set up).
@@ -96,17 +262,30 @@ pub async fn biometry_enable(
     request: VaultIdRequest,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    if !hello_available() {
-        return Err("biometry_not_available".to_string());
-    }
     let (enc_key, _payload_key, is_decoy) =
         crate::commands::session_keys(&state, &request.vault_id)?;
     if is_decoy {
         return Err("biometry_requires_real_vault".to_string());
     }
+
+    // P1-12: стараемся завернуть ключ сессии в Passport-обёртку — RequestCreate
+    // показывает Hello-промпт, ключ в Credential Manager лежит зашифрованным.
+    // Если пользователь отклонил enrollment или Passport упал — не роняем
+    // включение целиком, пробуем legacy-путь ниже.
+    if passport_supported() {
+        if let Ok(blob) = passport_seal(&request.vault_id, &enc_key, true) {
+            return entry(&request.vault_id)?
+                .set_password(&blob)
+                .map_err(|e| e.to_string());
+        }
+    }
+
+    if !hello_available() {
+        return Err("biometry_not_available".to_string());
+    }
     hello_verify("Mynx: enable Windows Hello unlock")?;
     entry(&request.vault_id)?
-        .set_password(&key_to_hex(&enc_key))
+        .set_password(&bytes_to_hex(&enc_key))
         .map_err(|e| e.to_string())
 }
 
@@ -136,23 +315,35 @@ pub async fn vault_unlock_biometry(
         ));
     }
 
-    if !hello_available() {
-        return Err("biometry_not_available".to_string());
-    }
-    if let Err(e) = hello_verify("Mynx: unlock vault") {
-        state.inner.unlock_attempts.record_failure(&request.vault_id);
-        return Err(e);
-    }
-
-    let mut hex = entry(&request.vault_id)?
+    let mut stored = entry(&request.vault_id)?
         .get_password()
         .map_err(|_| "biometry_not_enabled".to_string())?;
-    let enc_key = key_from_hex(&hex);
-    hex.zeroize();
-    let mut enc_key = enc_key.map_err(|e| {
-        state.inner.unlock_attempts.record_failure(&request.vault_id);
-        e
-    })?;
+
+    // P1-12: passport-blob (hex после префикса) → Hello-промпт показывается
+    // внутри passport_unwrap (RequestSignAsync). Legacy-запись (открытый hex)
+    // — сначала явная проверка Hello, как раньше.
+    let enc_key_result: Result<[u8; 32], String> =
+        if let Some(blob) = stored.strip_prefix(PASSPORT_BLOB_PREFIX) {
+            passport_unwrap(&request.vault_id, blob)
+        } else {
+            if !hello_available() {
+                stored.zeroize();
+                return Err("biometry_not_available".to_string());
+            }
+            match hello_verify("Mynx: unlock vault") {
+                Ok(()) => key_from_hex(&stored),
+                Err(e) => Err(e),
+            }
+        };
+    stored.zeroize();
+
+    let mut enc_key = match enc_key_result {
+        Ok(key) => key,
+        Err(e) => {
+            state.inner.unlock_attempts.record_failure(&request.vault_id);
+            return Err(e);
+        }
+    };
 
     let vault_path = Path::new(&request.vault_id);
     if !vault_path.exists() {
@@ -161,7 +352,13 @@ pub async fn vault_unlock_biometry(
     let vault = load_vault_file(vault_path).map_err(|e| e.to_string())?;
 
     // Rebuild the session from the stored encryption key (no password).
-    let decrypted = XChaCha20Aead::decrypt(&enc_key, &vault.header.encrypted_header).map_err(|_| {
+    // AAD v2 with legacy fallback: the vault may predate the AAD binding.
+    let decrypted = crate::vault::operations::x_decrypt_v2_or_legacy(
+        &enc_key,
+        &vault.header.encrypted_header,
+        crate::vault::operations::AAD_HEADER_V2,
+    )
+    .map_err(|_| {
         state.inner.unlock_attempts.record_failure(&request.vault_id);
         enc_key.zeroize();
         "biometry_key_invalid".to_string()
@@ -186,6 +383,9 @@ pub async fn vault_unlock_biometry(
         let mut dk = state.inner.device_key.lock().unwrap();
         *dk = device_key;
     }
+
+    // Baseline для бэкенд-автоблокировки
+    state.inner.touch_activity();
 
     Ok(VaultUnlockResponse {
         success: true,

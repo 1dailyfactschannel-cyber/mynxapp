@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useState, useEffect } from "react";
+import { safeExternalUrl } from "@/lib/utils";
 import {
   X,
   Copy,
@@ -434,9 +435,9 @@ export function EntryDetail({ entry, isOpen, onClose, onDelete, onToggleFavorite
                 }
                 className="field flex-1 rounded-xl px-4 py-3 text-sm"
               />
-              {entry.url && (
+              {safeExternalUrl(entry.url) && (
                 <a
-                  href={entry.url}
+                  href={safeExternalUrl(entry.url) as string}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="icon-btn"

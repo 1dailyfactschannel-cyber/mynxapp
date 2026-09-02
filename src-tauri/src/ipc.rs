@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+use crate::api::{domain_score, normalize_domain};
 use crate::commands::AppStateInner;
 use crate::crypto::CryptoModule;
 use crate::vault::operations::{
@@ -81,9 +82,9 @@ pub async fn run_ipc_server(state: Arc<AppStateInner>) -> Result<(), Box<dyn std
         let pipe = match create_secure_pipe() {
             Ok(p) => p,
             Err(e) => {
-                eprintln!("IPC secure pipe failed (default ACL): {}", e);
+                crate::log_warn!("IPC secure pipe failed (default ACL): {e}");
                 ServerOptions::new()
-                    .first_pipe_instance(false)
+                    .first_pipe_instance(true)
                     .pipe_mode(PipeMode::Message)
                     .create("\\\\.\\pipe\\mynx")?
             }
@@ -93,7 +94,7 @@ pub async fn run_ipc_server(state: Arc<AppStateInner>) -> Result<(), Box<dyn std
         // Без этого цикл крутится без await: плодит тысячи pipe'ов и задач
         // в секунду — 100% CPU и утечка памяти/дескрипторов вешают систему.
         if let Err(e) = pipe.connect().await {
-            eprintln!("IPC accept error: {}", e);
+            crate::log_error!("IPC accept error: {e}");
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             continue;
         }
@@ -101,7 +102,7 @@ pub async fn run_ipc_server(state: Arc<AppStateInner>) -> Result<(), Box<dyn std
         let state = state.clone();
         tokio::spawn(async move {
             if let Err(e) = handle_connection(pipe, state).await {
-                eprintln!("IPC connection error: {}", e);
+                crate::log_warn!("IPC connection error: {e}");
             }
         });
     }
@@ -123,7 +124,8 @@ fn create_secure_pipe() -> Result<tokio::net::windows::named_pipe::NamedPipeServ
         TOKEN_USER,
     };
     use windows::Win32::Storage::FileSystem::{
-        FILE_FLAGS_AND_ATTRIBUTES, FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX,
+        FILE_FLAGS_AND_ATTRIBUTES, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED,
+        PIPE_ACCESS_DUPLEX,
     };
     use windows::Win32::System::Pipes::{
         CreateNamedPipeW, PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE, PIPE_UNLIMITED_INSTANCES,
@@ -187,7 +189,12 @@ fn create_secure_pipe() -> Result<tokio::net::windows::named_pipe::NamedPipeServ
             lpSecurityDescriptor: psd.0,
             bInheritHandle: BOOL(0),
         };
-        let open_mode = FILE_FLAGS_AND_ATTRIBUTES(PIPE_ACCESS_DUPLEX.0 | FILE_FLAG_OVERLAPPED.0);
+        // FILE_FLAG_FIRST_PIPE_INSTANCE: процесс-владелец имени \\.\pipe\mynx
+        // должен быть ровно один. Без этого флага чужой процесс, создавший
+        // пайп раньше (squatting), перехватывает нативный хост и расширение.
+        let open_mode = FILE_FLAGS_AND_ATTRIBUTES(
+            PIPE_ACCESS_DUPLEX.0 | FILE_FLAG_OVERLAPPED.0 | FILE_FLAG_FIRST_PIPE_INSTANCE.0,
+        );
         let raw = CreateNamedPipeW(
             PCWSTR(name.as_ptr()),
             open_mode,
@@ -238,12 +245,12 @@ pub async fn run_ipc_server(state: Arc<AppStateInner>) -> Result<(), Box<dyn std
                 let state = state.clone();
                 tokio::spawn(async move {
                     if let Err(e) = handle_connection(stream, state).await {
-                        eprintln!("IPC connection error: {}", e);
+                        crate::log_warn!("IPC connection error: {e}");
                     }
                 });
             }
             Err(e) => {
-                eprintln!("IPC accept error: {}", e);
+                crate::log_error!("IPC accept error: {e}");
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
         }
@@ -338,6 +345,12 @@ async fn process_request(state: Arc<AppStateInner>, request: IpcRequest) -> IpcR
     let Some(session) = session else {
         return IpcResponse::error("vault_locked");
     };
+
+    // Backend-enforced autolock: доверенный IPC-клиент тоже не получает
+    // секреты из простоявшей сессии (та же проверка, что и на HTTP API).
+    if state.enforce_autolock().is_err() {
+        return IpcResponse::error("vault_locked");
+    }
 
     match action {
         "get" => {
@@ -628,28 +641,7 @@ fn new_entry_id() -> String {
     )
 }
 
-fn normalize_domain(url: &str) -> String {
-    let url = url.trim().to_lowercase();
-    let url = url
-        .strip_prefix("http://")
-        .or_else(|| url.strip_prefix("https://"))
-        .unwrap_or(&url);
-    let host = url.split('/').next().unwrap_or_default();
-    host.strip_prefix("www.").unwrap_or(host).to_string()
-}
-
-fn domain_score(request: &str, candidate: &str) -> usize {
-    if request == candidate {
-        return 1000;
-    }
-    if request.ends_with(&format!(".{}", candidate)) {
-        return 500;
-    }
-    if request.contains(candidate) {
-        return 100;
-    }
-    if candidate.contains(request) {
-        return 50;
-    }
-    0
-}
+// normalize_domain / domain_score переехали в api.rs как единый источник
+// правды: строгий скоринг eTLD+1 (exact host → 1000, тот же регистрируемый
+// домен → 500, всё остальное → 0). Дубль здесь исторически расходился
+// с api.rs и содержал уязвимый contains()-матчинг.

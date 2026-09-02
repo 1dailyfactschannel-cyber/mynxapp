@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { encryptedAttachmentsStorage } from "@/lib/secureStorage";
 
 export interface Attachment {
   id: string;
@@ -19,7 +20,7 @@ export interface AttachmentFolder {
   createdAt: number;
 }
 
-interface AttachmentsState {
+export interface AttachmentsState {
   attachments: Attachment[];
   folders: AttachmentFolder[];
   selectedFolderId: string | null;
@@ -113,6 +114,9 @@ export const useAttachmentsStore = create<AttachmentsState>()(
     {
       name: "mynx-attachments",
       version: 1,
+      // SECURITY: вложения больше не лежат в localStorage открытым текстом —
+      // снимок состояния шифруется AES-256-GCM (см. secureStorage.ts).
+      storage: encryptedAttachmentsStorage,
     }
   )
 );

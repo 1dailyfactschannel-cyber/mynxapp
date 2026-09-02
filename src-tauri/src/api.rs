@@ -119,6 +119,17 @@ async fn credentials(
     }
     state.app_state.api_attempts.reset("api_token");
 
+    // Backend-enforced autolock: idle session is wiped even if the UI timer
+    // was bypassed (webview suspended, tampered frontend, direct API calls).
+    if state.app_state.enforce_autolock().is_err() {
+        return Err((
+            StatusCode::LOCKED,
+            Json(ErrorResponse {
+                error: "vault_locked".to_string(),
+            }),
+        ));
+    }
+
     // Check unlocked
     let session = {
         let guard = state.app_state.vault_session.lock().unwrap();
@@ -199,7 +210,7 @@ async fn credentials(
     }))
 }
 
-fn normalize_domain(url: &str) -> String {
+pub(crate) fn normalize_domain(url: &str) -> String {
     let url = url.trim().to_lowercase();
     let url = url
         .strip_prefix("http://")
@@ -211,20 +222,42 @@ fn normalize_domain(url: &str) -> String {
         .to_string()
 }
 
-fn domain_score(request: &str, candidate: &str) -> usize {
+/// Approximate registrable domain (eTLD+1) without a full Public Suffix
+/// List: the last two labels, except for the common two-level public
+/// suffixes (co.uk, com.au, ...) where three labels are taken.
+fn registrable_domain(host: &str) -> String {
+    let labels: Vec<&str> = host.split('.').filter(|l| !l.is_empty()).collect();
+    if labels.len() <= 2 {
+        return labels.join(".");
+    }
+    const TWO_LEVEL_SUFFIXES: &[&str] = &[
+        "co.uk", "org.uk", "ac.uk", "gov.uk", "me.uk", "com.au", "net.au", "org.au",
+        "co.jp", "ne.jp", "or.jp", "ac.jp", "com.br", "com.cn", "com.mx", "com.tr",
+        "co.in", "co.nz", "co.za", "com.ua", "co.il",
+    ];
+    let last_two = labels[labels.len() - 2..].join(".");
+    if TWO_LEVEL_SUFFIXES.contains(&last_two.as_str()) {
+        labels[labels.len() - 3..].join(".")
+    } else {
+        last_two
+    }
+}
+
+/// SECURITY: the old scorer used bidirectional `contains()`, so a lookalike
+/// domain like "evil-paypal.com" or "paypal.com.evil.io" matched a saved
+/// "paypal.com" entry and received the stored password. Matching is now
+/// strict: exact host, or the same registrable domain (subdomains of the
+/// same site). Anything else scores 0 — no credentials are returned.
+pub(crate) fn domain_score(request: &str, candidate: &str) -> usize {
     if request == candidate {
-        return 1000;
+        return 1000; // exact host match
     }
-    if request.ends_with(&format!(".{}", candidate)) {
-        return 500;
+    let req_registrable = registrable_domain(request);
+    let cand_registrable = registrable_domain(candidate);
+    if !req_registrable.is_empty() && req_registrable == cand_registrable {
+        return 500; // same site: subdomain / www variants
     }
-    if request.contains(candidate) {
-        return 100;
-    }
-    if candidate.contains(request) {
-        return 50;
-    }
-    0
+    0 // lookalike or unrelated domain — never match
 }
 
 pub fn build_router(app_state: Arc<AppStateInner>) -> Router {
@@ -241,4 +274,39 @@ pub async fn run_api_server(app_state: Arc<AppStateInner>) -> Result<(), Box<dyn
     let listener = tokio::net::TcpListener::bind("127.0.0.1:5149").await?;
     axum::serve(listener, router).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_exact_host_match() {
+        assert_eq!(domain_score("paypal.com", "paypal.com"), 1000);
+    }
+
+    #[test]
+    fn test_same_registrable_domain() {
+        assert_eq!(domain_score("secure.paypal.com", "paypal.com"), 500);
+        assert_eq!(domain_score("paypal.com", "www.paypal.com"), 500);
+        assert_eq!(domain_score("a.b.example.co.uk", "example.co.uk"), 500);
+    }
+
+    #[test]
+    fn test_lookalike_domains_never_match() {
+        // The vulnerabilities that made the old `contains()` scorer dangerous:
+        assert_eq!(domain_score("evil-paypal.com", "paypal.com"), 0);
+        assert_eq!(domain_score("paypal.com.evil.io", "paypal.com"), 0);
+        assert_eq!(domain_score("notpaypal.com", "paypal.com"), 0);
+        assert_eq!(domain_score("paypal.com", "myevil-paypal.com"), 0);
+        assert_eq!(domain_score("paypa1.com", "paypal.com"), 0);
+    }
+
+    #[test]
+    fn test_registrable_domain_extraction() {
+        assert_eq!(registrable_domain("paypal.com"), "paypal.com");
+        assert_eq!(registrable_domain("secure.paypal.com"), "paypal.com");
+        assert_eq!(registrable_domain("a.b.example.co.uk"), "example.co.uk");
+        assert_eq!(registrable_domain("evil.io"), "evil.io");
+    }
 }

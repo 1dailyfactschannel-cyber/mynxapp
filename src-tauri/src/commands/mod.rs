@@ -2,7 +2,7 @@ use tauri::State;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::crypto::{
     Aes256GcmAead, CryptoModule, KdfParams, XChaCha20Aead, derive_encryption_key_hw, derive_key,
@@ -12,7 +12,7 @@ use crate::vault::operations::{
     disable_hw_key_with_secret, enable_hw_key, find_hw_keyfile, load_vault_file,
     open_vault,
     open_vault_any, read_hw_keyfile, remove_decoy, save_entries_to_vault, save_vault_file,
-    set_decoy_password,
+    set_decoy_password, x_decrypt_v2_or_legacy, AAD_HEADER_V2,
 };
 use crate::vault::types::{KdfParamsSerializable, VaultInnerHeader, VaultSession};
 
@@ -25,7 +25,9 @@ pub struct AppStateInner {
     pub device_key: Mutex<Option<[u8; 16]>>,
     /// Секрет аппаратного ключа (флешка), кэшируется на время сессии
     pub hw_key_secret: Mutex<Option<[u8; 32]>>,
-    pub api_token: Mutex<String>,
+    /// Токен локального HTTP API (P2-11): Zeroizing затирает старое значение
+    /// при ротации, чтобы копия токена не оставалась в памяти/свопе.
+    pub api_token: Mutex<Zeroizing<String>>,
     /// Ключ защищённого буфера: генерируется на запуск приложения,
     /// живёт только в памяти процесса.
     pub secure_clip_key: [u8; 32],
@@ -50,6 +52,14 @@ pub struct AppStateInner {
     /// Поколение таймера очистки буфера: новый clipboard_set_secure
     /// отменяет предыдущий таймер, увеличивая счётчик.
     pub clipboard_generation: Mutex<u64>,
+    /// Backend-enforced autolock: момент последней активности, touches
+    /// каждым секрет-возвращающим вызовом. None — активность ещё не была.
+    pub last_activity: Mutex<Option<std::time::Instant>>,
+    /// Таймаут автоблокировки в минутах (0 = выключена), синхронизируется
+    /// командой set_autolock_minutes из настроек UI. Дублирует фронтовый
+    /// таймер, но НЕ зависит от него: вебвью можно заморозить или подменить,
+    /// бэкенд-проверка остаётся.
+    pub autolock_minutes: Mutex<u64>,
 }
 
 impl AppState {
@@ -61,7 +71,7 @@ impl AppState {
                 vault_session: Mutex::new(None),
                 device_key: Mutex::new(None),
                 hw_key_secret: Mutex::new(None),
-                api_token: Mutex::new(generate_api_token()),
+                api_token: Mutex::new(Zeroizing::new(generate_api_token())),
                 secure_clip_key,
                 secure_clipboard: Mutex::new(None),
                 lock_on_hide: Mutex::new(true),
@@ -72,12 +82,48 @@ impl AppState {
                 unlock_attempts: crate::ratelimit::AttemptTrackerMap::new(),
                 api_attempts: crate::ratelimit::AttemptTrackerMap::new(),
                 clipboard_generation: Mutex::new(0),
+                last_activity: Mutex::new(None),
+                autolock_minutes: Mutex::new(5),
             }),
         }
     }
 
     pub fn clone_inner(&self) -> Arc<AppStateInner> {
         self.inner.clone()
+    }
+}
+
+impl AppStateInner {
+    /// Отметка активности сессии: вызывается секрет-возвращающими командами.
+    pub fn touch_activity(&self) {
+        *self.last_activity.lock().unwrap() = Some(std::time::Instant::now());
+    }
+
+    /// Backend-enforced autolock: если сессия разблокирована и простаивает
+    /// дольше autolock_minutes — секреты затираются немедленно, вызов
+    /// получает "vault_locked". Фронтовый таймер остаётся для UX, но
+    /// фактическое удаление секретов от него больше не зависит:
+    /// useAutoLock жил только в вебвью и обходился сном системы,
+    /// заморозкой окна или подменой фронта.
+    pub fn enforce_autolock(&self) -> Result<(), String> {
+        let session_active = self.vault_session.lock().unwrap().is_some();
+        if !session_active {
+            return Ok(());
+        }
+        let minutes = *self.autolock_minutes.lock().unwrap();
+        if minutes == 0 {
+            return Ok(()); // автоблокировка выключена в настройках
+        }
+        let expired = match *self.last_activity.lock().unwrap() {
+            Some(t) => t.elapsed() >= std::time::Duration::from_secs(minutes * 60),
+            None => false,
+        };
+        if expired {
+            wipe_secrets(self);
+            return Err("vault_locked".to_string());
+        }
+        self.touch_activity();
+        Ok(())
     }
 }
 
@@ -91,6 +137,10 @@ fn generate_api_token() -> String {
 /* Реестр путей keyfile (hw-ключ на любом пути: флешка или ПК)          */
 /* ------------------------------------------------------------------ */
 
+/// P2-12: файл лежит рядом с exe и хранит ТОЛЬКО пары имя → путь к keyfile
+/// (не секреты и не содержимое ключей). Компрометация реестра не даёт
+/// доступа к хранилищам: нужен ещё сам keyfile и мастер-пароль. Плейнтекст —
+/// осознанное решение; шифрование возможно по запросу (см. docs/architecture.md).
 fn hw_registry_file() -> Result<std::path::PathBuf, String> {
     let base = std::env::current_exe()
         .map_err(|e| e.to_string())?
@@ -435,6 +485,9 @@ pub async fn vault_unlock(
         *hw = hw_secret;
     }
 
+    // Baseline для бэкенд-автоблокировки: отсчёт простоя начинается с разблокировки
+    state.inner.touch_activity();
+
     Ok(VaultUnlockResponse {
         success: true,
         entry_count,
@@ -475,6 +528,18 @@ pub async fn vault_lock(app: tauri::AppHandle, state: State<'_, AppState>) -> Re
     Ok(())
 }
 
+/// Таймаут автоблокировки из настроек UI → бэкенд (минуты, 0 = выключено).
+/// Бэкенд держит свою копию и сам гасит сессию по простою —
+/// см. AppStateInner::enforce_autolock.
+#[tauri::command]
+pub async fn set_autolock_minutes(
+    minutes: u64,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    *state.inner.autolock_minutes.lock().unwrap() = minutes;
+    Ok(())
+}
+
 /// Переключатель «блокировать при сворачивании в трей» (настройки UI).
 #[tauri::command]
 pub async fn set_lock_on_hide(enabled: bool, state: State<'_, AppState>) -> Result<(), String> {
@@ -499,8 +564,10 @@ pub async fn secure_copy(
     request: SecureCopyRequest,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let ciphertext = Aes256GcmAead::encrypt(&state.inner.secure_clip_key, request.text.as_bytes())
-        .map_err(|e| e.to_string())?;
+    state.inner.enforce_autolock()?;
+    let ciphertext =
+        Aes256GcmAead::encrypt_with_aad(&state.inner.secure_clip_key, request.text.as_bytes(), b"mynx:clipboard")
+            .map_err(|e| e.to_string())?;
     let mut clip = state.inner.secure_clipboard.lock().unwrap();
     *clip = Some(ciphertext);
     Ok(())
@@ -519,8 +586,9 @@ pub async fn secure_paste(state: State<'_, AppState>) -> Result<(), String> {
         return Err("secure_buffer_empty".to_string());
     };
 
-    let plaintext = Aes256GcmAead::decrypt(&state.inner.secure_clip_key, &ciphertext)
-        .map_err(|e| e.to_string())?;
+    let plaintext =
+        Aes256GcmAead::decrypt_with_aad(&state.inner.secure_clip_key, &ciphertext, b"mynx:clipboard")
+            .map_err(|e| e.to_string())?;
     let text = String::from_utf8(plaintext).map_err(|e| e.to_string())?;
 
     crate::auto_type::wait_for_modifiers_released();
@@ -544,7 +612,16 @@ pub async fn check_vault_unlocked(state: State<'_, AppState>) -> Result<bool, St
 #[tauri::command]
 pub async fn get_api_token(state: State<'_, AppState>) -> Result<String, String> {
     let token = state.inner.api_token.lock().unwrap();
-    Ok(token.clone())
+    Ok(token.to_string())
+}
+
+/// Ротация токена локального API (P2-11). Старое значение затирается
+/// (Zeroize on drop), фронт получает новый токен и переавторизуется.
+#[tauri::command]
+pub async fn rotate_api_token(state: State<'_, AppState>) -> Result<String, String> {
+    let mut slot = state.inner.api_token.lock().unwrap();
+    *slot = Zeroizing::new(generate_api_token());
+    Ok(slot.to_string())
 }
 
 /// Язык UI для нативных диалогов (pairing), вызывается фронтом при смене языка.
@@ -603,6 +680,7 @@ pub async fn vault_get_entries(
     request: VaultIdRequest,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
+    state.inner.enforce_autolock()?;
     let (_enc_key, payload_key, is_decoy) = session_keys(&state, &request.vault_id)?;
     let vault = load_vault_file(Path::new(&request.vault_id)).map_err(|e| e.to_string())?;
     decrypt_entries(&payload_key, active_payload(&vault, is_decoy)).map_err(|e| e.to_string())
@@ -615,6 +693,7 @@ pub async fn vault_save_entries(
     request: SaveEntriesRequest,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    state.inner.enforce_autolock()?;
     let (enc_key, payload_key, is_decoy) = session_keys(&state, &request.vault_id)?;
 
     save_entries_to_vault(
@@ -676,16 +755,18 @@ pub async fn vault_change_password(
     ).map_err(|e| e.to_string())?;
 
     // Re-encrypt the inner header with the new key
-    let decrypted_header = XChaCha20Aead::decrypt(
+    let decrypted_header = x_decrypt_v2_or_legacy(
         &old_session.encryption_key,
         &vault.header.encrypted_header,
+        AAD_HEADER_V2,
     ).map_err(|e| e.to_string())?;
     let mut inner: VaultInnerHeader = serde_json::from_slice(&decrypted_header)
         .map_err(|e| e.to_string())?;
     inner.modified_at = chrono::Utc::now().timestamp();
     let header_bytes = serde_json::to_vec(&inner).map_err(|e| e.to_string())?;
-    vault.header.encrypted_header = XChaCha20Aead::encrypt(&new_enc_key, &header_bytes)
-        .map_err(|e| e.to_string())?;
+    vault.header.encrypted_header =
+        XChaCha20Aead::encrypt_with_aad(&new_enc_key, &header_bytes, AAD_HEADER_V2)
+            .map_err(|e| e.to_string())?;
     vault.header.salt = new_salt;
     vault.header.kdf_params = KdfParamsSerializable::from(&kdf_params);
 
@@ -804,8 +885,9 @@ pub async fn vault_decoy_status(
         return Err("Vault file not found".to_string());
     }
     let vault = load_vault_file(vault_path).map_err(|e| e.to_string())?;
-    let decrypted = XChaCha20Aead::decrypt(&enc_key, &vault.header.encrypted_header)
-        .map_err(|e| e.to_string())?;
+    let decrypted =
+        x_decrypt_v2_or_legacy(&enc_key, &vault.header.encrypted_header, AAD_HEADER_V2)
+            .map_err(|e| e.to_string())?;
     let inner: VaultInnerHeader = serde_json::from_slice(&decrypted).map_err(|e| e.to_string())?;
     Ok(DecoyStatusResponse {
         enabled: inner.decoy_enabled,

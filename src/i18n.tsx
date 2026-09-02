@@ -2,7 +2,8 @@ import { createContext, useContext, useState, ReactNode, useEffect, useCallback 
 
 export type Lang = "en" | "ru";
 
-const translations: Record<Lang, Record<string, string>> = {
+// Экспортируется для тестов паритета en/ru (vitest): см. src/i18n.test.ts
+export const translations: Record<Lang, Record<string, string>> = {
   en: {
     appName: "Mynx",
 
