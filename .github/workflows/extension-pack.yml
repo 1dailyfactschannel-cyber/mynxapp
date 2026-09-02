@@ -1,0 +1,35 @@
+name: Extension pack
+
+on:
+  push:
+    tags:
+      - "ext-v*"
+  workflow_dispatch:
+
+# P2-9: pack.bat делал zip вручную на машине разработчика. CI собирает
+# воспроизводимый артефакт для Chrome Web Store прямо из manifest.json.
+jobs:
+  zip:
+    name: zip extension
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read extension version
+        id: ver
+        run: |
+          VER=$(node -p "require('./extension/manifest.json').version")
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+      - name: Zip (excluding docs and store materials)
+        run: |
+          cd extension
+          zip -r "../mynx-extension-${{ steps.ver.outputs.version }}.zip" . \
+            -x "README.md" "store/*" "*.md"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mynx-extension-${{ steps.ver.outputs.version }}
+          path: mynx-extension-*.zip
+      # Загружать в store должен владелец: артефакт появляется в Actions.
+      - name: Summary
+        run: |
+          echo "Extension v${{ steps.ver.outputs.version }} packed." >> "$GITHUB_STEP_SUMMARY"
+          echo "Download from the run artifacts page, then upload to Chrome Web Store." >> "$GITHUB_STEP_SUMMARY"
