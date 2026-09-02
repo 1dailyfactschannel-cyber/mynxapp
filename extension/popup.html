@@ -5,31 +5,50 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Mynx</title>
   <style>
+    :root { --fs-scale: 1; }
+    html { font-size: calc(100% * var(--fs-scale)); }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
       width: 340px;
       background: #0a0a0f;
       color: #e5e7eb;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      font-size: 13px;
+      font-size: 0.8125rem;
     }
+    button { font-family: inherit; }
+
     .header {
       display: flex;
       align-items: center;
       gap: 8px;
       padding: 12px 14px 10px;
     }
-    .logo { font-size: 18px; }
-    .title { font-size: 15px; font-weight: 700; flex: 1; }
+    .logo { font-size: 1.125rem; }
+    .title { font-size: 0.9375rem; font-weight: 700; flex: 1; }
     .pill {
       padding: 3px 10px;
       border-radius: 999px;
-      font-size: 11px;
+      font-size: 0.6875rem;
       font-weight: 600;
     }
     .pill.unlocked { background: rgba(16,185,129,0.15); color: #34d399; }
     .pill.locked { background: rgba(245,158,11,0.15); color: #fbbf24; }
     .pill.offline { background: rgba(100,116,139,0.2); color: #94a3b8; }
+    .gear {
+      width: 26px;
+      height: 26px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid #1f2937;
+      border-radius: 6px;
+      background: transparent;
+      color: #94a3b8;
+      font-size: 0.875rem;
+      cursor: pointer;
+    }
+    .gear:hover { color: #10b981; border-color: #10b981; }
+    .gear[aria-expanded="true"] { color: #10b981; border-color: #10b981; }
 
     .tabs {
       display: flex;
@@ -44,9 +63,10 @@
       border: none;
       border-bottom: 2px solid transparent;
       color: #64748b;
-      font-size: 12px;
+      font-size: 0.75rem;
       font-weight: 600;
       cursor: pointer;
+      white-space: nowrap;
     }
     .tab:hover { color: #94a3b8; }
     .tab.active { color: #10b981; border-bottom-color: #10b981; }
@@ -58,28 +78,51 @@
       border-radius: 999px;
       background: #10b981;
       color: #0a0a0f;
-      font-size: 10px;
+      font-size: 0.625rem;
     }
 
     .pane { padding: 12px 14px; min-height: 160px; max-height: 380px; overflow-y: auto; }
-    .hidden { display: none; }
+    .hidden { display: none !important; }
 
+    /* ---------- Empty states with illustrations ---------- */
     .empty {
-      padding: 28px 10px;
+      padding: 22px 10px;
       text-align: center;
       color: #64748b;
-      font-size: 12px;
+      font-size: 0.75rem;
       line-height: 1.6;
+      white-space: pre-line;
     }
+    .empty .illust { display: block; margin: 0 auto 8px; opacity: 0.9; }
+    .empty .illust .float { animation: bob 3.2s ease-in-out infinite; transform-origin: center; }
+    @keyframes bob { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
 
+    /* ---------- Entry rows ---------- */
     .entry {
       display: flex;
       align-items: center;
       gap: 8px;
-      padding: 8px 6px;
+      padding: var(--row-pad, 8px) 6px;
       border-radius: 8px;
+      animation: fadeUp 0.18s ease-out both;
     }
+    @keyframes fadeUp { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
     .entry:hover { background: rgba(255,255,255,0.04); }
+    .entry.dragging { opacity: 0.45; }
+    .entry .fav { width: 16px; height: 16px; flex: none; display: flex; align-items: center; justify-content: center; }
+    .entry .fav img { width: 16px; height: 16px; border-radius: 4px; display: block; }
+    .entry .fav .letter {
+      width: 16px;
+      height: 16px;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.5625rem;
+      font-weight: 700;
+      color: #0a0a0f;
+      background: linear-gradient(135deg, #34d399, #10b981);
+    }
     .entry .meta { flex: 1; min-width: 0; }
     .entry .meta .t {
       font-weight: 600;
@@ -89,12 +132,31 @@
     }
     .entry .meta .u {
       color: #64748b;
-      font-size: 12px;
+      font-size: 0.75rem;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
     }
+    body.density-compact .entry .meta .u { display: none; }
     .entry .actions { display: flex; gap: 4px; }
+    .entry .badge {
+      padding: 1px 6px;
+      border-radius: 999px;
+      font-size: 0.625rem;
+      font-weight: 700;
+      background: rgba(16,185,129,0.15);
+      color: #34d399;
+      flex: none;
+    }
+    .entry .badge.warn { background: rgba(245,158,11,0.15); color: #fbbf24; }
+    .entry .badge.bad { background: rgba(239,68,68,0.15); color: #f87171; }
+
+    /* ---------- Focus ring (a11y) ---------- */
+    button:focus-visible, input:focus-visible, select:focus-visible,
+    .entry:focus-visible, .chip:focus-visible {
+      outline: 2px solid #10b981;
+      outline-offset: 1px;
+    }
 
     button.btn {
       padding: 5px 10px;
@@ -102,7 +164,7 @@
       border-radius: 6px;
       background: #10b981;
       color: #0a0a0f;
-      font-size: 12px;
+      font-size: 0.75rem;
       font-weight: 700;
       cursor: pointer;
     }
@@ -118,7 +180,7 @@
       border-radius: 6px;
       background: transparent;
       color: #94a3b8;
-      font-size: 13px;
+      font-size: 0.8125rem;
       cursor: pointer;
     }
     button.icon-btn:hover { color: #10b981; border-color: #10b981; }
@@ -130,25 +192,152 @@
       border-radius: 8px;
       background: #111118;
       color: #e5e7eb;
-      font-size: 13px;
+      font-size: 0.8125rem;
       outline: none;
     }
     input:focus { border-color: #10b981; }
-
-    .gen-output {
-      display: flex;
-      gap: 6px;
-      margin-bottom: 12px;
+    select {
+      padding: 5px 8px;
+      border: 1px solid #1f2937;
+      border-radius: 6px;
+      background: #111118;
+      color: #e5e7eb;
+      font-size: 0.75rem;
+      outline: none;
     }
+
+    /* ---------- Category chips (All tab) ---------- */
+    .chips {
+      display: flex;
+      gap: 4px;
+      overflow-x: auto;
+      padding: 0 0 8px;
+      scrollbar-width: none;
+    }
+    .chips::-webkit-scrollbar { display: none; }
+    .chip {
+      padding: 3px 10px;
+      border-radius: 999px;
+      border: 1px solid #1f2937;
+      background: transparent;
+      color: #94a3b8;
+      font-size: 0.6875rem;
+      font-weight: 600;
+      cursor: grab;
+      white-space: nowrap;
+      animation: fadeUp 0.18s ease-out both;
+    }
+    .chip:hover { color: #e5e7eb; border-color: #374151; }
+    .chip.active { border-color: #10b981; color: #10b981; }
+    .chip.drop-target { background: rgba(16,185,129,0.25); border-color: #10b981; color: #d1fae5; }
+    .all-footer { display: flex; gap: 6px; margin-top: 8px; }
+    .all-footer .btn { flex: 1; }
+
+    /* ---------- Generator ---------- */
+    .gen-output { display: flex; gap: 6px; margin-bottom: 12px; }
     .gen-output input { font-family: ui-monospace, Consolas, monospace; }
     .gen-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-    .gen-row label { flex: 1; color: #94a3b8; font-size: 12px; }
+    .gen-row label { flex: 1; color: #94a3b8; font-size: 0.75rem; }
     .gen-checks { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 12px; }
-    .gen-checks label { display: flex; align-items: center; gap: 6px; color: #94a3b8; font-size: 12px; }
+    .gen-checks label { display: flex; align-items: center; gap: 6px; color: #94a3b8; font-size: 0.75rem; }
+    .strength-meter { height: 4px; border-radius: 999px; background: #1f2937; margin-bottom: 4px; overflow: hidden; }
+    .strength-meter div { height: 100%; width: 0; border-radius: 999px; transition: width 0.25s ease, background-color 0.25s ease; }
+    .strength-label { color: #64748b; font-size: 0.6875rem; margin-bottom: 12px; }
     input[type="range"] { flex: 2; accent-color: #10b981; }
     input[type="checkbox"] { accent-color: #10b981; }
 
-    .pwd-mask { font-family: ui-monospace, Consolas, monospace; color: #64748b; font-size: 12px; }
+    /* ---------- Health ---------- */
+    .health-top { display: flex; align-items: center; gap: 14px; margin-bottom: 12px; }
+    .ring-wrap { position: relative; width: 74px; height: 74px; flex: none; }
+    .ring-wrap svg { transform: rotate(-90deg); }
+    .ring-score {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      font-size: 1.25rem;
+      line-height: 1;
+    }
+    .ring-score small { font-size: 0.5625rem; color: #64748b; font-weight: 600; margin-top: 2px; }
+    .health-stats { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; font-size: 0.75rem; color: #94a3b8; }
+    .health-stats b { color: #e5e7eb; font-weight: 700; }
+    .health-spark { margin: 0 0 10px; }
+    .health-spark .cap { display: flex; justify-content: space-between; font-size: 0.6875rem; color: #64748b; margin-bottom: 3px; }
+    .delta-up { color: #34d399; }
+    .delta-down { color: #f87171; }
+    .health-section {
+      border: 1px solid #1f2937;
+      border-radius: 8px;
+      margin-bottom: 6px;
+      animation: fadeUp 0.18s ease-out both;
+    }
+    .health-section summary {
+      list-style: none;
+      cursor: pointer;
+      padding: 8px 10px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: #cbd5e1;
+    }
+    .health-section summary::-webkit-details-marker { display: none; }
+    .health-section summary .n {
+      margin-left: auto;
+      background: #1f2937;
+      color: #94a3b8;
+      border-radius: 999px;
+      padding: 1px 8px;
+      font-size: 0.625rem;
+    }
+    .health-section .h-item { padding: 4px 10px 8px; font-size: 0.6875rem; color: #94a3b8; }
+    .health-section .h-item b { color: #e5e7eb; display: block; font-size: 0.75rem; }
+    .health-toolbar { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; }
+    .health-toolbar label { color: #94a3b8; font-size: 0.6875rem; }
+    .health-toolbar .btn { margin-left: auto; }
+
+    /* ---------- Settings pane ---------- */
+    .set-group { margin-bottom: 14px; animation: fadeUp 0.18s ease-out both; }
+    .set-group h3 {
+      font-size: 0.6875rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #64748b;
+      margin-bottom: 8px;
+    }
+    .set-row { display: flex; align-items: center; gap: 8px; padding: 5px 0; font-size: 0.75rem; color: #cbd5e1; }
+    .set-row label.main { flex: 1; }
+    .set-note { color: #64748b; font-size: 0.6875rem; line-height: 1.5; padding: 2px 0 4px; }
+    .switch { position: relative; width: 32px; height: 18px; flex: none; }
+    .switch input { opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+    .switch .track {
+      position: absolute;
+      inset: 0;
+      border-radius: 999px;
+      background: #1f2937;
+      pointer-events: none;
+      transition: background 0.15s ease;
+    }
+    .switch .track::after {
+      content: "";
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: #94a3b8;
+      transition: transform 0.15s ease, background 0.15s ease;
+    }
+    .switch input:checked + .track { background: rgba(16,185,129,0.4); }
+    .switch input:checked + .track::after { transform: translateX(14px); background: #10b981; }
+    .switch input:focus-visible + .track { outline: 2px solid #10b981; outline-offset: 1px; }
+
+    .pwd-mask { font-family: ui-monospace, Consolas, monospace; color: #64748b; font-size: 0.75rem; }
     .toast {
       position: fixed;
       bottom: 10px;
@@ -158,43 +347,83 @@
       border-radius: 999px;
       background: #10b981;
       color: #0a0a0f;
-      font-size: 11px;
+      font-size: 0.6875rem;
       font-weight: 700;
       opacity: 0;
       transition: opacity 0.2s;
       pointer-events: none;
+      z-index: 50;
     }
     .toast.show { opacity: 1; }
+
+    /* ---------- Density modes ---------- */
+    body.density-compact { --row-pad: 4px; }
+    body.density-cozy { --row-pad: 8px; }
+    body.density-spacious { --row-pad: 12px; }
+
+    /* ---------- High contrast (a11y) ---------- */
+    body.contrast-high { background: #000; }
+    body.contrast-high .entry:hover { background: #1a2230; }
+    body.contrast-high .tab { color: #9ca3af; }
+    body.contrast-high .tab.active { color: #34d399; border-bottom-color: #34d399; }
+    body.contrast-high .entry .meta .u, body.contrast-high .gen-row label,
+    body.contrast-high .gen-checks label, body.contrast-high .set-note,
+    body.contrast-high .health-stats, body.contrast-high .empty { color: #c3ccda; }
+    body.contrast-high button.icon-btn, body.contrast-high .gear,
+    body.contrast-high .health-section, body.contrast-high input[type="text"],
+    body.contrast-high input[type="password"], body.contrast-high select,
+    body.contrast-high .chip { border-color: #566577; }
+    body.contrast-high .tabs, body.contrast-high .health-section { border-color: #566577; }
+
+    /* ---------- Reduced motion (setting + system) ---------- */
+    body.motion-reduced *, body.motion-reduced *::before, body.motion-reduced *::after {
+      animation: none !important;
+      transition: none !important;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+    }
   </style>
 </head>
-<body>
+<body class="density-cozy">
   <div class="header">
     <div class="logo">🔐</div>
     <div class="title">Mynx</div>
     <div id="status-pill" class="pill offline">Offline</div>
+    <button id="settings-btn" class="gear" aria-label="Settings" aria-expanded="false" title="Settings">⚙</button>
   </div>
 
-  <div class="tabs">
-    <button class="tab active" data-tab="site">Site</button>
-    <button class="tab" data-tab="all">All</button>
-    <button class="tab" data-tab="generator">Generator</button>
-    <button class="tab" data-tab="saved">Saved<span id="saved-count" class="count hidden">0</span></button>
+  <div id="tabs" class="tabs" role="tablist" aria-label="Mynx sections">
+    <button class="tab active" data-tab="site" role="tab" aria-selected="true" aria-controls="pane-site">Site</button>
+    <button class="tab" data-tab="all" role="tab" aria-selected="false" aria-controls="pane-all">All</button>
+    <button class="tab" data-tab="health" role="tab" aria-selected="false" aria-controls="pane-health">Health</button>
+    <button class="tab" data-tab="generator" role="tab" aria-selected="false" aria-controls="pane-generator">Gen</button>
+    <button class="tab" data-tab="saved" role="tab" aria-selected="false" aria-controls="pane-saved">Saved<span id="saved-count" class="count hidden">0</span></button>
   </div>
 
-  <div id="pane-site" class="pane"></div>
+  <div id="pane-site" class="pane" role="tabpanel" aria-label="Logins for this site"></div>
 
-  <div id="pane-all" class="pane hidden">
-    <input id="search-input" type="text" placeholder="Search logins..." style="margin-bottom:8px" />
-    <div id="all-list"></div>
-  </div>
-
-  <div id="pane-generator" class="pane hidden">
-    <div class="gen-output">
-      <input id="gen-password" type="text" readonly />
-      <button id="gen-copy" class="icon-btn" title="Copy">⧉</button>
+  <div id="pane-all" class="pane hidden" role="tabpanel" aria-label="All logins">
+    <input id="search-input" type="text" placeholder="Search logins..." aria-label="Search logins" style="margin-bottom:8px" />
+    <div id="category-chips" class="chips" role="group" aria-label="Filter by category"></div>
+    <div id="all-scroll" style="max-height:288px; overflow-y:auto; position:relative;"></div>
+    <div class="all-footer">
+      <button id="import-btn" class="btn" title="Import CSV from Chrome or Bitwarden">⬆ Import CSV</button>
+      <input id="import-file" type="file" accept=".csv,text/csv" class="hidden" aria-label="CSV file to import" />
     </div>
+  </div>
+
+  <div id="pane-health" class="pane hidden" role="tabpanel" aria-label="Vault health"></div>
+
+  <div id="pane-generator" class="pane hidden" role="tabpanel" aria-label="Password generator">
+    <div class="gen-output">
+      <input id="gen-password" type="text" readonly aria-label="Generated password" />
+      <button id="gen-copy" class="icon-btn" title="Copy" aria-label="Copy generated password">⧉</button>
+    </div>
+    <div class="strength-meter" aria-hidden="true"><div id="gen-strength-bar"></div></div>
+    <div class="strength-label" id="gen-strength-label">Strength: —</div>
     <div class="gen-row">
-      <label>Length <span id="gen-length-val">20</span></label>
+      <label for="gen-length">Length <span id="gen-length-val">20</span></label>
       <input id="gen-length" type="range" min="8" max="64" value="20" />
     </div>
     <div class="gen-checks">
@@ -206,9 +435,11 @@
     <button id="gen-regen" class="btn" style="width:100%">Regenerate</button>
   </div>
 
-  <div id="pane-saved" class="pane hidden"></div>
+  <div id="pane-saved" class="pane hidden" role="tabpanel" aria-label="Captured logins"></div>
 
-  <div id="toast" class="toast">Copied</div>
+  <div id="pane-settings" class="pane hidden" role="tabpanel" aria-label="Settings"></div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite">Copied</div>
 
   <script src="popup.js"></script>
 </body>

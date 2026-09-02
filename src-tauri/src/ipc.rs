@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::api::{domain_score, normalize_domain};
-use crate::commands::AppStateInner;
+use crate::commands::{run_vault_backup_files, AppStateInner};
 use crate::crypto::CryptoModule;
 use crate::vault::operations::{
     active_payload, decrypt_entries, load_vault_file, save_entries_to_vault,
@@ -12,7 +12,8 @@ use crate::vault::types::VaultSession;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct IpcRequest {
-    /// Действие: get / list / search / save / status / pair.
+    /// Действие: get / list / search / save / status / pair /
+    /// list-all / update-entry / health / import-entries / backup.
     /// Пустое значение — старый формат (только domain), трактуется как "get".
     #[serde(default)]
     pub action: String,
@@ -20,6 +21,9 @@ pub struct IpcRequest {
     pub domain: Option<String>,
     #[serde(default)]
     pub entry: Option<serde_json::Value>,
+    /// Массовые операции (import-entries): массив черновиков записей.
+    #[serde(default)]
+    pub entries: Option<Vec<serde_json::Value>>,
     /// Ключ доверенного клиента, выдаётся после подтверждения в UI (pair).
     #[serde(default)]
     pub key: Option<String>,
@@ -36,6 +40,9 @@ pub struct IpcResponse {
     pub totp: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub entries: Option<Vec<serde_json::Value>>,
+    /// Произвольные данные новых действий (health-отчёт, сводка импорта).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unlocked: Option<bool>,
     /// Ключ сессии, выдаётся один раз при успешном pair.
@@ -52,6 +59,7 @@ impl IpcResponse {
             password: None,
             totp: None,
             entries: None,
+            data: None,
             unlocked: None,
             key: None,
             error: Some(message.to_string()),
@@ -65,6 +73,7 @@ impl IpcResponse {
             password: None,
             totp: None,
             entries: None,
+            data: None,
             unlocked: None,
             key: None,
             error: None,
@@ -473,6 +482,7 @@ async fn process_request(state: Arc<AppStateInner>, request: IpcRequest) -> IpcR
 
             let field = |name: &str| entry.get(name).cloned().unwrap_or(serde_json::Value::Null);
             let now = chrono::Utc::now().timestamp_millis();
+            let pw_str = entry.get("password").and_then(|v| v.as_str()).unwrap_or("");
             // Формат записи совпадает с тем, что создаёт фронт (QuickAdd)
             let mut new_entry = serde_json::json!({
                 "id": new_entry_id(),
@@ -483,6 +493,7 @@ async fn process_request(state: Arc<AppStateInner>, request: IpcRequest) -> IpcR
                 "category": "",
                 "tags": [],
                 "favorite": false,
+                "strength": estimate_strength(pw_str),
                 "createdAt": now,
                 "updatedAt": now,
             });
@@ -510,6 +521,322 @@ async fn process_request(state: Arc<AppStateInner>, request: IpcRequest) -> IpcR
             ) {
                 Ok(()) => IpcResponse::ok(),
                 Err(e) => IpcResponse::error(&e.to_string()),
+            }
+        }
+        "list-all" => {
+            // Полный список активных записей БЕЗ паролей: идентификаторы и
+            // организация (категория/избранное) для DnD-сортировки в попапе.
+            let entries = match load_entries(&session) {
+                Ok(e) => e,
+                Err(e) => return IpcResponse::error(&e),
+            };
+            let list: Vec<serde_json::Value> = entries
+                .iter()
+                .filter(|e| is_active(e))
+                .map(|entry| {
+                    pick_fields(
+                        entry,
+                        &[
+                            ("id", "id"),
+                            ("title", "title"),
+                            ("username", "username"),
+                            ("url", "url"),
+                            ("category", "category"),
+                            ("favorite", "favorite"),
+                            ("updatedAt", "updatedAt"),
+                        ],
+                    )
+                })
+                .collect();
+
+            let mut resp = IpcResponse::ok();
+            resp.entries = Some(list);
+            resp
+        }
+        "update-entry" => {
+            // Точечная правка организации записи (категория/избранное) —
+            // используется drag&drop в расширении. Пароль не трогаем.
+            let Some(patch) = request.entry else {
+                return IpcResponse::error("entry required");
+            };
+            let Some(id) = patch.get("id").and_then(|v| v.as_str()) else {
+                return IpcResponse::error("entry id required");
+            };
+            let mut entries = match load_entries(&session) {
+                Ok(e) => e,
+                Err(e) => return IpcResponse::error(&e),
+            };
+
+            let Some(entry) = entries
+                .iter_mut()
+                .find(|e| is_active(e) && e.get("id").and_then(|v| v.as_str()) == Some(id))
+            else {
+                return IpcResponse::error("no_match");
+            };
+
+            if let Some(category) = patch.get("category").and_then(|v| v.as_str()) {
+                entry["category"] = serde_json::Value::String(category.to_string());
+            }
+            if let Some(favorite) = patch.get("favorite").and_then(|v| v.as_bool()) {
+                entry["favorite"] = serde_json::Value::Bool(favorite);
+            }
+            entry["updatedAt"] = serde_json::json!(chrono::Utc::now().timestamp_millis());
+
+            let entries_json = match serde_json::to_string(&entries) {
+                Ok(j) => j,
+                Err(e) => return IpcResponse::error(&e.to_string()),
+            };
+            let vault_path = std::path::Path::new(&session.vault_id);
+            match save_entries_to_vault(
+                vault_path,
+                &session.encryption_key,
+                &session.payload_key,
+                session.is_decoy,
+                &entries_json,
+            ) {
+                Ok(()) => IpcResponse::ok(),
+                Err(e) => IpcResponse::error(&e.to_string()),
+            }
+        }
+        "health" => {
+            // Health-отчёт считается здесь, где живут пароли: наружу уходят
+            // ТОЛЬКО агрегаты и метаданные — ни одного пароля в ответе.
+            let entries = match load_entries(&session) {
+                Ok(e) => e,
+                Err(e) => return IpcResponse::error(&e),
+            };
+            let active: Vec<&serde_json::Value> = entries.iter().filter(|e| is_active(e)).collect();
+            let total = active.len();
+
+            let threshold_days = request
+                .entry
+                .as_ref()
+                .and_then(|e| e.get("thresholdDays"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(180);
+
+            let now_ms = chrono::Utc::now().timestamp_millis();
+
+            let strength_of = |e: &serde_json::Value| -> u64 {
+                e.get("strength")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or_else(|| {
+                        estimate_strength(e.get("password").and_then(|v| v.as_str()).unwrap_or(""))
+                    })
+            };
+
+            // Возраст пароля: passwordHistory[0].changedAt → createdAt → updatedAt
+            let changed_at = |e: &serde_json::Value| -> Option<i64> {
+                if let Some(hist) = e.get("passwordHistory").and_then(|v| v.as_array()) {
+                    if let Some(at) = hist
+                        .first()
+                        .and_then(|h| h.get("changedAt"))
+                        .and_then(|v| v.as_i64())
+                    {
+                        return Some(at);
+                    }
+                }
+                if let Some(at) = e.get("createdAt").and_then(|v| v.as_i64()) {
+                    return Some(at);
+                }
+                e.get("updatedAt").and_then(|v| v.as_i64())
+            };
+            let age_days = |e: &serde_json::Value| -> Option<i64> {
+                changed_at(e).map(|at| ((now_ms - at).max(0) / (24 * 3600 * 1000)) as i64)
+            };
+
+            // Повторы: одинаковый непустой пароль у разных записей
+            let mut pw_counts: std::collections::HashMap<String, usize> =
+                std::collections::HashMap::new();
+            for e in &active {
+                if let Some(pw) = e.get("password").and_then(|v| v.as_str()) {
+                    if !pw.is_empty() {
+                        *pw_counts.entry(pw.to_string()).or_default() += 1;
+                    }
+                }
+            }
+            let is_reused = |e: &serde_json::Value| -> bool {
+                e.get("password")
+                    .and_then(|v| v.as_str())
+                    .and_then(|pw| pw_counts.get(pw).map(|c| *c > 1))
+                    .unwrap_or(false)
+            };
+
+            let mut weak = Vec::new();
+            let mut reused = Vec::new();
+            let mut rotation_due = Vec::new();
+            let mut no2fa = Vec::new();
+            let mut ages: Vec<i64> = Vec::new();
+            let mut strength_sum: u64 = 0;
+
+            for e in &active {
+                let strength = strength_of(e);
+                strength_sum += strength;
+                let age = age_days(e);
+                if let Some(a) = age {
+                    ages.push(a);
+                }
+                let meta = entry_meta(e, strength, age);
+                if strength < 50 {
+                    weak.push(meta.clone());
+                }
+                if is_reused(e) {
+                    reused.push(meta);
+                }
+                if threshold_days > 0 {
+                    if let Some(a) = age {
+                        if a > threshold_days as i64 {
+                            rotation_due.push(entry_meta(e, strength, age));
+                        }
+                    }
+                }
+                let has_totp = e
+                    .get("totpSecret")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| !s.is_empty());
+                let tagged = e
+                    .get("tags")
+                    .and_then(|v| v.as_array())
+                    .is_some_and(|tags| tags.iter().any(|t| t.as_str() == Some("2fa")));
+                if !has_totp && !tagged {
+                    no2fa.push(entry_meta(e, strength, age));
+                }
+            }
+
+            let base_strength = if total > 0 {
+                (strength_sum / total as u64) as i64
+            } else {
+                0
+            };
+            let avg_age = if ages.is_empty() {
+                None
+            } else {
+                Some((ages.iter().sum::<i64>() / ages.len() as i64) as u64)
+            };
+
+            // Штрафы, зеркально health.ts: повторы до −20, просрочка до −15
+            let reuse_share = if total > 0 { reused.len() as f64 / total as f64 } else { 0.0 };
+            let rotation_share =
+                if total > 0 { rotation_due.len() as f64 / total as f64 } else { 0.0 };
+            let penalty = (reuse_share * 40.0).round().min(20.0) as i64
+                + (rotation_share * 30.0).round().min(15.0) as i64;
+            let score = if total == 0 {
+                0
+            } else {
+                (base_strength - penalty).clamp(0, 100)
+            };
+
+            let mut resp = IpcResponse::ok();
+            resp.data = Some(serde_json::json!({
+                "total": total,
+                "score": score,
+                "baseStrength": base_strength.clamp(0, 100) as u64,
+                "avgPasswordAgeDays": avg_age,
+                "thresholdDays": threshold_days,
+                "weak": weak,
+                "reused": reused,
+                "rotationDue": rotation_due,
+                "no2fa": no2fa,
+            }));
+            resp
+        }
+        "import-entries" => {
+            // Массовый импорт CSV (Chrome/Bitwarden) из попапа с дедупликацией:
+            // скипаем черновики, у которых совпадает нормализованный домен и
+            // имя пользователя с уже существующей активной записью.
+            let Some(drafts) = request.entries else {
+                return IpcResponse::error("entries required");
+            };
+            let mut entries = match load_entries(&session) {
+                Ok(e) => e,
+                Err(e) => return IpcResponse::error(&e),
+            };
+
+            let existing_keys: std::collections::HashSet<String> = entries
+                .iter()
+                .filter(|e| is_active(e))
+                .map(import_key)
+                .collect();
+
+            let now = chrono::Utc::now().timestamp_millis();
+            let mut imported: usize = 0;
+            let mut skipped: usize = 0;
+            for draft in drafts {
+                let field = |name: &str| {
+                    draft
+                        .get(name)
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.trim().to_string())
+                        .unwrap_or_default()
+                };
+                let (title, username, password, url) =
+                    (field("title"), field("username"), field("password"), field("url"));
+                // Пустые и неполные строки CSV пропускаем
+                if username.is_empty() || password.is_empty() {
+                    skipped += 1;
+                    continue;
+                }
+                let key = import_key(&serde_json::json!({ "url": url, "username": username }));
+                if existing_keys.contains(&key) {
+                    skipped += 1;
+                    continue;
+                }
+                existing_keys.insert(key);
+                entries.push(serde_json::json!({
+                    "id": new_entry_id(),
+                    "title": if title.is_empty() { url_or_domain(&url, &username) } else { title },
+                    "username": username,
+                    "password": password,
+                    "url": url,
+                    "category": "",
+                    "tags": [],
+                    "favorite": false,
+                    "strength": estimate_strength(&password),
+                    "createdAt": now,
+                    "updatedAt": now,
+                }));
+                imported += 1;
+            }
+
+            if imported > 0 {
+                let entries_json = match serde_json::to_string(&entries) {
+                    Ok(j) => j,
+                    Err(e) => return IpcResponse::error(&e.to_string()),
+                };
+                let vault_path = std::path::Path::new(&session.vault_id);
+                if let Err(e) = save_entries_to_vault(
+                    vault_path,
+                    &session.encryption_key,
+                    &session.payload_key,
+                    session.is_decoy,
+                    &entries_json,
+                ) {
+                    return IpcResponse::error(&e.to_string());
+                }
+            }
+
+            let mut resp = IpcResponse::ok();
+            resp.data = Some(serde_json::json!({ "imported": imported, "skipped": skipped }));
+            resp
+        }
+        "backup" => {
+            // Бэкап активного хранилища по запросу доверенного клиента
+            // (расширение, chrome.alarms). Параметры синхронизирует фронт
+            // командой set_ipc_backup_prefs — расширение путь не выбирает.
+            let prefs = state.ipc_backup_prefs.lock().unwrap().clone();
+            let Some(prefs) = prefs else {
+                return IpcResponse::error("backup_not_configured");
+            };
+            match run_vault_backup_files(&session.vault_id, &prefs.backup_path, prefs.keep_count) {
+                Ok(()) => {
+                    let mut resp = IpcResponse::ok();
+                    resp.data = Some(serde_json::json!({
+                        "backedUp": true,
+                        "at": chrono::Utc::now().timestamp_millis(),
+                    }));
+                    resp
+                }
+                Err(e) => IpcResponse::error(&e),
             }
         }
         _ => IpcResponse::error("unknown_action"),
@@ -626,6 +953,74 @@ fn pick_fields(entry: &serde_json::Value, fields: &[(&str, &str)]) -> serde_json
         );
     }
     serde_json::Value::Object(obj)
+}
+
+/// Метаданные записи для health-отчёта: БЕЗ пароля — только заголовок,
+/// логин, URL, сила и возраст пароля.
+fn entry_meta(
+    entry: &serde_json::Value,
+    strength: u64,
+    age_days: Option<i64>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "id": entry.get("id").cloned().unwrap_or(serde_json::Value::Null),
+        "title": entry.get("title").cloned().unwrap_or(serde_json::Value::Null),
+        "username": entry.get("username").cloned().unwrap_or(serde_json::Value::Null),
+        "url": entry.get("url").cloned().unwrap_or(serde_json::Value::Null),
+        "strength": strength,
+        "ageDays": age_days,
+    })
+}
+
+/// Порт calculateStrength (src/stores/vault.ts): одинаковые баллы,
+/// чтобы health-данные были согласованы между фронтом и IPC.
+fn estimate_strength(pw: &str) -> u64 {
+    if pw.is_empty() {
+        return 0;
+    }
+    let mut s: u64 = 0;
+    let len = pw.chars().count();
+    if len >= 12 {
+        s += 25;
+    }
+    if len >= 16 {
+        s += 15;
+    }
+    if pw.chars().any(|c| c.is_ascii_lowercase()) {
+        s += 15;
+    }
+    if pw.chars().any(|c| c.is_ascii_uppercase()) {
+        s += 15;
+    }
+    if pw.chars().any(|c| c.is_ascii_digit()) {
+        s += 15;
+    }
+    if pw.chars().any(|c| !c.is_ascii_alphanumeric()) {
+        s += 15;
+    }
+    s.min(100)
+}
+
+/// Ключ дедупликации импорта: нормализованный домен + username
+/// (та же логика приоритетов, что и в dedupe.ts фронтенда).
+fn import_key(entry: &serde_json::Value) -> String {
+    let url = entry.get("url").and_then(|v| v.as_str()).unwrap_or("");
+    let username = entry
+        .get("username")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_lowercase();
+    format!("{}|{}", normalize_domain(url), username)
+}
+
+/// Заголовок по умолчанию для записи без названия: домен из URL, иначе логин.
+fn url_or_domain(url: &str, username: &str) -> String {
+    let domain = normalize_domain(url);
+    if !domain.is_empty() {
+        return domain.to_string();
+    }
+    username.to_string()
 }
 
 /// UUID v4 — тот же формат id, что выдаёт фронт через crypto.randomUUID().

@@ -41,7 +41,18 @@ function App() {
   const backupPath = useSettingsStore((s) => s.backupPath);
   const backupKeepCount = useSettingsStore((s) => s.backupKeepCount);
   useEffect(() => {
-    if (!isTauri || !backupEnabled) return;
+    if (!isTauri) return;
+
+    // Синхронизация настроек бэкапа в Rust-слой: доверенные IPC-клиенты
+    // (расширение по chrome.alarms) бэкапят теми же параметрами.
+    // Путь и лимит копий синхроним всегда, независимо от backupEnabled:
+    // расписание расширения включается/выключается на стороне браузера.
+    invoke("set_ipc_backup_prefs", {
+      backupPath,
+      keepCount: backupKeepCount,
+    }).catch((e) => console.error("set_ipc_backup_prefs failed:", e));
+
+    if (!backupEnabled) return;
 
     const doBackup = async () => {
       const { activeVault, isUnlocked } = useAppStore.getState();

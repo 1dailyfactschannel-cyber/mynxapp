@@ -6,6 +6,8 @@ struct NativeMessage {
     r#type: String,
     domain: Option<String>,
     entry: Option<serde_json::Value>,
+    /// Массовые операции (import-entries): массив черновиков записей.
+    entries: Option<Vec<serde_json::Value>>,
     /// Ключ доверенного клиента (получен через pair).
     key: Option<String>,
     /// Имя клиента для диалога подтверждения.
@@ -20,6 +22,8 @@ struct IpcRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     entry: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    entries: Option<Vec<serde_json::Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     client: Option<String>,
@@ -32,6 +36,8 @@ struct IpcResponse {
     password: Option<String>,
     totp: Option<String>,
     entries: Option<Vec<serde_json::Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<serde_json::Value>,
     unlocked: Option<bool>,
     key: Option<String>,
     error: Option<String>,
@@ -78,6 +84,7 @@ fn handle_message(msg: NativeMessage) -> serde_json::Value {
         action: action.to_string(),
         domain,
         entry,
+        entries: msg.entries.clone(),
         key: msg.key.clone(),
         client: msg.client.clone(),
     };
@@ -172,6 +179,92 @@ fn handle_message(msg: NativeMessage) -> serde_json::Value {
                 }),
                 Err(e) => serde_json::json!({
                     "type": "status",
+                    "success": false,
+                    "error": e.to_string(),
+                }),
+            }
+        }
+        "list-all-entries" => {
+            match send_ipc(ipc("list-all", None, None)) {
+                Ok(data) => serde_json::json!({
+                    "type": "all-entries",
+                    "success": true,
+                    "data": data,
+                }),
+                Err(e) => serde_json::json!({
+                    "type": "all-entries",
+                    "success": false,
+                    "error": e.to_string(),
+                }),
+            }
+        }
+        "update-entry" => {
+            let Some(entry) = msg.entry else {
+                return serde_json::json!({
+                    "type": "entry-updated",
+                    "success": false,
+                    "error": "entry required",
+                });
+            };
+            match send_ipc(ipc("update-entry", None, Some(entry))) {
+                Ok(data) => serde_json::json!({
+                    "type": "entry-updated",
+                    "success": true,
+                    "data": data,
+                }),
+                Err(e) => serde_json::json!({
+                    "type": "entry-updated",
+                    "success": false,
+                    "error": e.to_string(),
+                }),
+            }
+        }
+        "get-health" => {
+            match send_ipc(ipc("health", None, msg.entry.clone())) {
+                Ok(data) => serde_json::json!({
+                    "type": "health-report",
+                    "success": true,
+                    "data": data,
+                }),
+                Err(e) => serde_json::json!({
+                    "type": "health-report",
+                    "success": false,
+                    "error": e.to_string(),
+                }),
+            }
+        }
+        "import-entries" => {
+            let Some(entries) = msg.entries.clone() else {
+                return serde_json::json!({
+                    "type": "import-result",
+                    "success": false,
+                    "error": "entries required",
+                });
+            };
+            let mut req = ipc("import-entries", None, None);
+            req.entries = Some(entries);
+            match send_ipc(req) {
+                Ok(data) => serde_json::json!({
+                    "type": "import-result",
+                    "success": true,
+                    "data": data,
+                }),
+                Err(e) => serde_json::json!({
+                    "type": "import-result",
+                    "success": false,
+                    "error": e.to_string(),
+                }),
+            }
+        }
+        "vault-backup" => {
+            match send_ipc(ipc("backup", None, None)) {
+                Ok(data) => serde_json::json!({
+                    "type": "backup-done",
+                    "success": true,
+                    "data": data,
+                }),
+                Err(e) => serde_json::json!({
+                    "type": "backup-done",
                     "success": false,
                     "error": e.to_string(),
                 }),

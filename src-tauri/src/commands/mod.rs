@@ -60,6 +60,18 @@ pub struct AppStateInner {
     /// таймер, но НЕ зависит от него: вебвью можно заморозить или подменить,
     /// бэкенд-проверка остаётся.
     pub autolock_minutes: Mutex<u64>,
+    /// Настройки бэкапа, синхронизируемые командой set_ipc_backup_prefs:
+    /// доверенный IPC-клиент (расширение по chrome.alarms) запускает бэкап
+    /// активного хранилища с теми же параметрами, что и фронтовый шедулер.
+    /// Только в памяти: после рестарта фронт синхронизирует заново.
+    pub ipc_backup_prefs: Mutex<Option<IpcBackupPrefs>>,
+}
+
+/// Параметры бэкапа для IPC-клиентов (см. ipc.rs, действие "backup").
+#[derive(Debug, Clone)]
+pub struct IpcBackupPrefs {
+    pub backup_path: String,
+    pub keep_count: usize,
 }
 
 impl AppState {
@@ -84,6 +96,7 @@ impl AppState {
                 clipboard_generation: Mutex::new(0),
                 last_activity: Mutex::new(None),
                 autolock_minutes: Mutex::new(5),
+                ipc_backup_prefs: Mutex::new(None),
             }),
         }
     }
@@ -1107,13 +1120,22 @@ pub struct BackupRequest {
 #[tauri::command]
 pub async fn vault_backup(request: BackupRequest, state: State<'_, AppState>) -> Result<(), String> {
     session_keys(&state, &request.vault_id)?;
+    run_vault_backup_files(&request.vault_id, &request.backup_path, request.keep_count)
+}
 
-    let vault_path = Path::new(&request.vault_id);
+/// Общая рутина бэкапа: используется и Tauri-командой vault_backup,
+/// и IPC-действием "backup" (расширение по расписанию chrome.alarms).
+pub fn run_vault_backup_files(
+    vault_id: &str,
+    backup_path: &str,
+    keep_count: usize,
+) -> Result<(), String> {
+    let vault_path = Path::new(vault_id);
     if !vault_path.exists() {
         return Err("Vault file not found".to_string());
     }
 
-    let backup_dir = Path::new(&request.backup_path);
+    let backup_dir = Path::new(backup_path);
     std::fs::create_dir_all(backup_dir).map_err(|e| e.to_string())?;
 
     let vault_name = vault_path
@@ -1152,11 +1174,29 @@ pub async fn vault_backup(request: BackupRequest, state: State<'_, AppState>) ->
         b_time.cmp(&a_time)
     });
 
-    for old in backups.iter().skip(request.keep_count) {
+    for old in backups.iter().skip(keep_count) {
         let _ = std::fs::remove_file(old);
         let _ = std::fs::remove_file(old.with_extension("safepass.dk"));
     }
 
+    Ok(())
+}
+
+/// Синхронизация настроек бэкапа из фронта: после этого доверенные
+/// IPC-клиенты могут запускать бэкап тех же файлов (ipc.rs, "backup").
+#[tauri::command]
+pub fn set_ipc_backup_prefs(
+    backup_path: String,
+    keep_count: usize,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    if backup_path.trim().is_empty() {
+        return Err("Backup path is empty".to_string());
+    }
+    *state.inner.ipc_backup_prefs.lock().unwrap() = Some(IpcBackupPrefs {
+        backup_path,
+        keep_count,
+    });
     Ok(())
 }
 

@@ -140,16 +140,24 @@
     icon.className = ICON_CLASS;
     icon.innerHTML = LOCK_SVG;
     icon.title = "Mynx: fill login";
+    // Доступность: роль кнопки + клавиатурный запуск (Enter/Space).
+    icon.setAttribute("role", "button");
+    icon.setAttribute("aria-label", "Mynx: fill login");
+    icon.tabIndex = 0;
     icon.style.cssText =
       "position:fixed !important; width:18px !important; height:18px !important; " +
       "cursor:pointer !important; z-index:2147483647 !important; line-height:0 !important; " +
       "padding:0 !important; margin:0 !important; background:transparent !important; " +
       "user-select:none !important;";
 
-    icon.addEventListener("click", (e) => {
+    const open = (e) => {
       e.preventDefault();
       e.stopPropagation();
       onIconClick(field, icon);
+    };
+    icon.addEventListener("click", open);
+    icon.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") open(e);
     });
 
     document.documentElement.appendChild(icon);
@@ -222,6 +230,10 @@
     if (dd) dd.remove();
     document.removeEventListener("mousedown", onOutsideClick, true);
     document.removeEventListener("keydown", onEscape, true);
+    document.removeEventListener("keydown", onDropdownKey, true);
+    DROPDOWN_KEY.dd = null;
+    DROPDOWN_KEY.options = [];
+    DROPDOWN_KEY.active = -1;
   }
 
   function onOutsideClick(e) {
@@ -233,6 +245,57 @@
 
   function onEscape(e) {
     if (e.key === "Escape") closeDropdown();
+  }
+
+  // ---- Клавиатурная навигация по дропдауну (listbox-паттерн) ----
+
+  const DROPDOWN_KEY = { options: [], active: -1 };
+
+  function setDropdownActive(dd, idx) {
+    DROPDOWN_KEY.active = idx;
+    DROPDOWN_KEY.options.forEach((opt, i) => {
+      const on = i === idx;
+      opt.setAttribute("aria-selected", on ? "true" : "false");
+      opt.style.setProperty("background", on ? "rgba(16,185,129,0.15)" : "transparent", "important");
+    });
+    const active = DROPDOWN_KEY.options[idx];
+    if (active) dd.setAttribute("aria-activedescendant", active.id);
+  }
+
+  function initDropdownKeys(dd) {
+    DROPDOWN_KEY.options = Array.from(dd.querySelectorAll('[role="option"]'));
+    DROPDOWN_KEY.options.forEach((opt, i) => {
+      opt.id = `mynx-opt-${i}`;
+      opt.tabIndex = -1;
+      opt.addEventListener("mouseenter", () => setDropdownActive(dd, i));
+    });
+    dd.setAttribute("role", "listbox");
+    dd.setAttribute("aria-label", "Mynx logins");
+    if (DROPDOWN_KEY.options.length > 0) setDropdownActive(dd, 0);
+  }
+
+  function onDropdownKey(e) {
+    const dd = document.getElementById(DROPDOWN_ID);
+    if (!dd || DROPDOWN_KEY.options.length === 0) return;
+    let idx = DROPDOWN_KEY.active;
+    if (e.key === "ArrowDown") idx = Math.min(DROPDOWN_KEY.options.length - 1, idx + 1);
+    else if (e.key === "ArrowUp") idx = Math.max(0, idx - 1);
+    else if (e.key === "Home") idx = 0;
+    else if (e.key === "End") idx = DROPDOWN_KEY.options.length - 1;
+    else if (e.key === "Enter" || e.key === " ") {
+      const opt = DROPDOWN_KEY.options[idx];
+      if (opt) {
+        e.preventDefault();
+        e.stopPropagation();
+        opt.click();
+      }
+      return;
+    } else {
+      return;
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    setDropdownActive(dd, idx);
   }
 
   function showDropdown(anchorField, buildContent) {
@@ -250,10 +313,12 @@
     dd._mynxAnchor = anchorField;
     document.documentElement.appendChild(dd);
     buildContent(dd);
+    initDropdownKeys(dd);
     positionDropdown();
 
     document.addEventListener("mousedown", onOutsideClick, true);
     document.addEventListener("keydown", onEscape, true);
+    document.addEventListener("keydown", onDropdownKey, true);
   }
 
   // Дропдаун следует за своим полем при скролле/ресайзе; если снизу нет места —
@@ -275,24 +340,49 @@
     }
   }
 
-  function dropdownItem(dd, { title, subtitle, onClick }) {
+  function dropdownItem(dd, { title, subtitle, onClick, domain }) {
     const item = document.createElement("div");
+    item.setAttribute("role", "option");
+    item.setAttribute("aria-selected", "false");
     item.style.cssText =
       "padding:8px 10px !important; border-radius:6px !important; cursor:pointer !important; " +
-      "display:flex !important; flex-direction:column !important; gap:2px !important;";
-    item.innerHTML =
+      "display:flex !important; align-items:center !important; gap:8px !important;";
+
+    if (domain) {
+      const fav = document.createElement("div");
+      fav.style.cssText =
+        "width:16px !important; height:16px !important; flex:none !important; border-radius:4px !important; " +
+        "background:linear-gradient(135deg,#34d399,#10b981) !important; color:#0a0a0f !important; " +
+        "font-size:9px !important; font-weight:700 !important; line-height:16px !important; " +
+        "text-align:center !important; overflow:hidden !important;";
+      fav.textContent = (title || "?").charAt(0).toUpperCase();
+      item.appendChild(fav);
+      chrome.runtime.sendMessage({ type: "GET_FAVICON", domain }, (res) => {
+        if (chrome.runtime.lastError || !res || !res.success || !res.data || !res.data.dataUrl) return;
+        const img = document.createElement("img");
+        img.src = res.data.dataUrl;
+        img.width = 16;
+        img.height = 16;
+        img.alt = "";
+        img.style.cssText = "border-radius:4px !important; display:block !important;";
+        fav.textContent = "";
+        fav.appendChild(img);
+      });
+    }
+
+    const textWrap = document.createElement("div");
+    textWrap.style.cssText =
+      "display:flex !important; flex-direction:column !important; gap:2px !important; " +
+      "min-width:0 !important; flex:1 !important;";
+    textWrap.innerHTML =
       `<span style="color:#e5e7eb !important; font-size:13px !important; font-weight:600 !important; ` +
       `white-space:nowrap !important; overflow:hidden !important; text-overflow:ellipsis !important;"></span>` +
       `<span style="color:#64748b !important; font-size:12px !important; ` +
       `white-space:nowrap !important; overflow:hidden !important; text-overflow:ellipsis !important;"></span>`;
-    item.children[0].textContent = title;
-    item.children[1].textContent = subtitle || "";
-    item.addEventListener("mouseenter", () => {
-      item.style.setProperty("background", "rgba(16,185,129,0.15)", "important");
-    });
-    item.addEventListener("mouseleave", () => {
-      item.style.setProperty("background", "transparent", "important");
-    });
+    textWrap.children[0].textContent = title;
+    textWrap.children[1].textContent = subtitle || "";
+    item.appendChild(textWrap);
+
     if (onClick) {
       item.addEventListener("click", (e) => {
         e.preventDefault();
