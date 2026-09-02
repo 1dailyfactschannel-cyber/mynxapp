@@ -34,12 +34,15 @@ impl KdfParams {
     /// crashed the whole process instead of failing the unlock. Now the
     /// error propagates and the caller returns "wrong_password"/"bad vault".
     pub fn to_argon2_params(&self) -> anyhow::Result<argon2::Params> {
-        Ok(argon2::Params::new(
+        // argon2::Error не реализует std::error::Error, поэтому `?` не
+        // конвертируется в anyhow::Error — маппим вручную через Display.
+        argon2::Params::new(
             self.memory_kb,
             self.iterations,
             self.parallelism,
             Some(KEY_LENGTH),
-        )?)
+        )
+        .map_err(|e| anyhow::anyhow!("invalid argon2 params: {}", e))
     }
 }
 

@@ -1,4 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// Tauri-макросы команд (генерируют __cmd__*) опираются на unit never-type
+// fallback — rustc 1.98 сделал это ошибкой (`rust_2024_compatibility`).
+// Lint отключён до исправления макроса в tauri: поведение не меняется.
+#![allow(dependency_on_unit_never_type_fallback)]
 
 mod crypto;
 mod vault;
@@ -30,7 +34,7 @@ use commands::{
     vault_hw_key_status, vault_decoy_status, vault_enable_hw_key, vault_disable_hw_key,
     secure_copy, secure_paste, secure_copy_available,
     get_api_token, get_device_key, set_lock_on_hide, set_app_language, rotate_api_token,
-    AppState,
+    set_autolock_minutes, AppState,
 };
 use clipboard::{clipboard_history_set_enabled, clipboard_set_secure};
 use hotkey::{tray_hotkey_get, tray_hotkey_pause, tray_hotkey_set};

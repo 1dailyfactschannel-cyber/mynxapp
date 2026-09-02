@@ -151,16 +151,20 @@ fn passport_sign(credential_name: &str, create: bool, challenge: &[u8]) -> Resul
         .map_err(|e| e.to_string())?
         .get()
         .map_err(|e| e.to_string())?;
+    // KeyCredentialOperationResult.Result() -> IBuffer: именно буфер
+    // передаётся в CopyToByteArray (сам result буфером не является).
+    let sig_buffer = signature.Result().map_err(|e| e.to_string())?;
 
     let mut sig_bytes = Array::<u8>::new();
-    CryptographicBuffer::CopyToByteArray(&signature, &mut sig_bytes)
+    CryptographicBuffer::CopyToByteArray(&sig_buffer, &mut sig_bytes)
         .map_err(|e| e.to_string())?;
     Ok(sig_bytes.to_vec())
 }
 
 /// Ключ обёртки: HKDF-SHA256 от детерминированной подписи паспорта.
+/// (salt = PASSPORT_SALT, ikm = подпись, info = vault_id, L = 32)
 fn passport_wrap_key(vault_id: &str, signature: &[u8]) -> Result<Zeroizing<Vec<u8>>, String> {
-    let okm = crate::crypto::derive_key(PASSPORT_SALT, signature, vault_id.as_bytes(), 32)
+    let okm = crate::crypto::derive_hkdf_key(PASSPORT_SALT, signature, vault_id.as_bytes(), 32)
         .map_err(|e| e.to_string())?;
     Ok(Zeroizing::new(okm))
 }
