@@ -13,7 +13,7 @@ jobs:
     name: zip extension
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Read extension version
         id: ver
         run: |
