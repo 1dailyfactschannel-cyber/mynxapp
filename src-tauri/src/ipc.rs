@@ -752,7 +752,7 @@ async fn process_request(state: Arc<AppStateInner>, request: IpcRequest) -> IpcR
                 Err(e) => return IpcResponse::error(&e),
             };
 
-            let existing_keys: std::collections::HashSet<String> = entries
+            let mut existing_keys: std::collections::HashSet<String> = entries
                 .iter()
                 .filter(|e| is_active(e))
                 .map(import_key)
