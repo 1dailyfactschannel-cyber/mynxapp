@@ -10,25 +10,31 @@ persistently except session-scoped pending logins.
 
 ## Development install
 
-1. Install the Mynx desktop app 1.2.3+ — `mynx-native-host.exe` ships
-   inside the installer (`%LOCALAPPDATA%\Mynx\mynx-native-host.exe`).
-   Alternatively build it yourself: `cd src-tauri && cargo build --release --bin mynx-native-host`.
+1. Install the Mynx desktop app **1.2.4+** — it registers the native messaging
+   host automatically during installation and re-registers on every launch
+   (manifest in `%LOCALAPPDATA%\Mynx\native-host\`, HKCU keys for Chrome /
+   Edge / Chromium / Brave). No manual steps required.
 2. Open `chrome://extensions`, enable **Developer mode**, click
-   **Load unpacked** and select this `extension/` folder.
-3. Copy the generated extension ID (under the extension name).
-4. Register the native host (no admin rights needed):
-
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File native-host\register-native-host.ps1 `
-     -ExtensionId "<YOUR-EXTENSION-ID>"
-   ```
-
-   The script finds `mynx-native-host.exe`, writes the host manifest to
-   `%LOCALAPPDATA%\Mynx\native-host\` with your extension ID in
-   `allowed_origins`, and registers it for Chrome / Edge / Chromium in HKCU.
-   Pass `-HostPath` if the exe is somewhere non-standard.
-5. Restart the browser, start the Mynx desktop app, unlock your vault, and
+   **Load unpacked** and select this `extension/` folder. The ID shown
+   under the extension name is the stable one (`falikbndiimjeolnkclmifhgobmghhfe`):
+   manifest.json embeds a fixed public key, so unpacked and store builds
+   share the same ID.
+3. Restart the browser, start the Mynx desktop app, unlock your vault, and
    open the extension popup — the status pill should read **Unlocked**.
+
+### Manual registration (repair / custom IDs only)
+
+Only needed for non-standard browser builds or custom extension IDs:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File native-host\register-native-host.ps1
+```
+
+The script finds `mynx-native-host.exe`, writes the host manifest to
+`%LOCALAPPDATA%\Mynx\native-host\` with the stable extension ID in
+`allowed_origins`, and registers it for Chrome / Edge / Chromium in HKCU.
+Pass `-HostPath` if the exe is somewhere non-standard, or
+`-ExtensionId "id1,id2"` to also allow custom local builds.
 
 ## Publishing to Chrome Web Store
 
@@ -43,20 +49,21 @@ persistently except session-scoped pending logins.
 
 ### Stable extension ID and native messaging
 
-The store assigns a permanent extension ID on first upload. Native
-messaging only works for origins listed in the native host manifest, so
-**after publishing** add it to `native-host/com.matt.mynx.native.json`:
+`manifest.json` embeds a fixed public key (`"key"`), so the extension ID is
+the same for the unpacked build and the Chrome Web Store build:
 
-```json
-"allowed_origins": ["chrome-extension://<PUBLISHED-ID>/"]
-```
+`falikbndiimjeolnkclmifhgobmghhfe`
 
-and ship the updated manifest with the desktop installer.
+This ID is already listed in `allowed_origins` of the native host manifest
+written by `register-native-host.ps1` and in the template
+`native-host/com.matt.mynx.native.json`, so native messaging works out of
+the box — no post-publish registration changes are needed.
 
-To keep the same ID during development, pack the extension once with
-`chrome.exe --pack-extension=<path\to\extension>` and add the printed `key`
-to `manifest.json` — the ID is derived from that key. Do not commit private
-`.pem` keys to the repository.
+The private half of the key lives in `store/extension-key.pem` (gitignored).
+Keep it safe: deleting or regenerating it changes the extension ID and
+breaks native messaging for existing installs. To rotate the ID on purpose,
+delete the `.pem`, rerun `scripts/build_store_package.py`, and ship an
+updated native-host manifest with the new ID.
 
 ## Files
 

@@ -16,6 +16,9 @@ src-tauri/backups/
 # Updater signing keys: never commit (private key lives in ~/.tauri/)
 .tauri/
 *.key
+
+# Extension signing key (public half lives in manifest.json "key")
+extension/store/extension-key.pem
 extension/store/mock/.profile-*/
 
 # Внутренняя доска задач (переносится в GitHub Projects, P2-7)

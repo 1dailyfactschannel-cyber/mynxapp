@@ -1,6 +1,6 @@
 [package]
 name = "mynx"
-version = "1.2.3"
+version = "1.2.4"
 description = "Mynx - Offline password manager"
 authors = ["Mynx"]
 license = "MIT"

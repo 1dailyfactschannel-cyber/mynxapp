@@ -18,6 +18,7 @@ mod clipboard;
 mod ipc;
 mod logging;
 mod memprotect;
+mod native_host_reg;
 mod ratelimit;
 mod hotkey;
 #[cfg(target_os = "windows")]
@@ -84,6 +85,10 @@ pub fn main() {
             if let Ok(data_dir) = app.path().app_data_dir() {
                 logging::init(data_dir.join("logs"));
             }
+
+            // Натив-хост для расширения: саморегистрация при каждом запуске
+            // (self-heal). Манифест + HKCU-ключи браузеров — без прав админа.
+            native_host_reg::ensure_registration();
 
             // AppHandle нужен IPC-потоку, чтобы показывать pairing-диалог.
             *app.state::<AppState>().inner.app_handle.lock().unwrap() = Some(app.handle().clone());

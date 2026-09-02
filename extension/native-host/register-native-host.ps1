@@ -5,9 +5,9 @@
 #   powershell -ExecutionPolicy Bypass -File register-native-host.ps1 -ExtensionId "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 #   ... -HostPath "D:\Tools\mynx-native-host.exe" -ExtensionId "id1,id2"
 #
-# Extension ID: chrome://extensions -> Developer mode -> "ID" of the Mynx
-# extension (32 letters a-p). Unpacked extensions get an ID derived from the
-# folder path, so it is unique per machine and cannot be hardcoded.
+# The extension manifest ships with a fixed public key, so its ID is the same
+# everywhere (unpacked and store build) and is baked in below as $StableId.
+# Pass -ExtensionId only to additionally allow custom/local builds.
 
 param(
   [string]$ExtensionId = "",
@@ -16,6 +16,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 $HostName_ = "com.matt.mynx.native"
+# Stable ID of the published Mynx extension (derived from manifest.json "key").
+$StableId = "falikbndiimjeolnkclmifhgobmghhfe"
 
 Write-Host "=== Mynx native host registration ===" -ForegroundColor Cyan
 
@@ -38,24 +40,20 @@ if (-not $HostPath -or -not (Test-Path $HostPath)) {
 Write-Host "Host exe : $HostPath"
 
 # 2. Extension ID(s) ----------------------------------------------------------
-if (-not $ExtensionId) {
-  Write-Host ""
-  Write-Host "Open chrome://extensions, enable Developer mode, copy the ID"
-  Write-Host "of the Mynx extension (32 letters a-p)."
-  $ExtensionId = Read-Host "Extension ID"
-}
-$ids = @()
+# The stable ID is always allowed (covers both the unpacked build and the
+# Chrome Web Store build - they share the same key). Extra IDs can be added
+# via -ExtensionId "id1,id2" for custom local builds.
+$ids = @("chrome-extension://$StableId/")
 foreach ($raw in $ExtensionId.Split(",")) {
   $id = $raw.Trim().ToLower()
-  if ($id -match '^[a-p]{32}$') { $ids += "chrome-extension://$id/" }
-  elseif ($id) {
+  if (-not $id) { continue }
+  if ($id -match '^[a-p]{32}$') {
+    $origin = "chrome-extension://$id/"
+    if ($ids -notcontains $origin) { $ids += $origin }
+  } else {
     Write-Host "ERROR: '$id' does not look like an extension ID (expected 32 letters a-p)." -ForegroundColor Red
     exit 1
   }
-}
-if ($ids.Count -eq 0) {
-  Write-Host "ERROR: no extension ID given." -ForegroundColor Red
-  exit 1
 }
 
 # 3. Write the host manifest ---------------------------------------------------
