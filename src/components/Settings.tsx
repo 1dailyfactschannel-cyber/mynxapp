@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { motion } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
@@ -32,6 +32,13 @@ import {
   Info,
   ExternalLink,
   RefreshCw,
+  GitMerge,
+  Rows3,
+  ALargeSmall,
+  Contrast,
+  Sparkles,
+  ImageIcon,
+  HardDriveDownload,
 } from "lucide-react";
 import { GlassCard } from "@/components/GlassCard";
 import { useTheme } from "next-themes";
@@ -48,6 +55,12 @@ import {
   type ImportFormat,
   type ImportResult,
 } from "@/lib/import";
+import {
+  findDuplicate,
+  mergeDraftIntoEntry,
+  type DuplicateMatch,
+  type MergeStrategy,
+} from "@/lib/dedupe";
 
 interface SettingsProps {
   isOpen: boolean;
@@ -113,6 +126,24 @@ export function Settings({ isOpen, onClose }: SettingsProps) {
   const clipboardHistoryDisabled = useSettingsStore((s) => s.clipboardHistoryDisabled);
   const setClipboardHistoryDisabled = useSettingsStore((s) => s.setClipboardHistoryDisabled);
   const activeVault = useAppStore((s) => s.activeVault);
+
+  // Внешний вид / a11y
+  const density = useSettingsStore((s) => s.density);
+  const setDensity = useSettingsStore((s) => s.setDensity);
+  const uiScale = useSettingsStore((s) => s.uiScale);
+  const setUiScale = useSettingsStore((s) => s.setUiScale);
+  const highContrast = useSettingsStore((s) => s.highContrast);
+  const setHighContrast = useSettingsStore((s) => s.setHighContrast);
+  const reduceMotion = useSettingsStore((s) => s.reduceMotion);
+  const setReduceMotion = useSettingsStore((s) => s.setReduceMotion);
+  const faviconAutoFetch = useSettingsStore((s) => s.faviconAutoFetch);
+  const setFaviconAutoFetch = useSettingsStore((s) => s.setFaviconAutoFetch);
+
+  // Статус автобэкапа
+  const lastBackupAt = useSettingsStore((s) => s.lastBackupAt);
+  const lastBackupOk = useSettingsStore((s) => s.lastBackupOk);
+  const setLastBackup = useSettingsStore((s) => s.setLastBackup);
+  const [backupRunning, setBackupRunning] = useState(false);
 
   const [activeSection, setActiveSection] = useState<string>("security");
   const [showDanger, setShowDanger] = useState(false);
@@ -196,6 +227,27 @@ export function Settings({ isOpen, onClose }: SettingsProps) {
     await navigator.clipboard.writeText(apiToken);
     setTokenCopied(true);
     setTimeout(() => setTokenCopied(false), 2000);
+  };
+
+  /** Ручной бэкап той же командой, что и шедулер */
+  const runBackupNow = async () => {
+    if (!isTauri || !activeVault || backupRunning) return;
+    setBackupRunning(true);
+    try {
+      await invoke("vault_backup", {
+        request: {
+          vault_id: activeVault,
+          backup_path: backupPath,
+          keep_count: backupKeepCount,
+        },
+      });
+      setLastBackup(Date.now(), true);
+    } catch (e) {
+      console.error("Manual backup failed:", e);
+      setLastBackup(Date.now(), false);
+    } finally {
+      setBackupRunning(false);
+    }
   };
 
   /** Включение/выключение Windows Hello для активного vault (vault разблокирован) */
@@ -612,6 +664,75 @@ export function Settings({ isOpen, onClose }: SettingsProps) {
                         />
                       </div>
 
+                      {/* Плотность интерфейса */}
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2">
+                          <Rows3 className="w-4 h-4 t3" />
+                          <span className="text-sm t1">{t("densityLabel")}</span>
+                        </div>
+                        <div className="grid grid-cols-3 gap-2">
+                          {([
+                            ["compact", t("densityCompact")],
+                            ["cozy", t("densityCozy")],
+                            ["spacious", t("densitySpacious")],
+                          ] as const).map(([id, label]) => (
+                            <button
+                              key={id}
+                              onClick={() => setDensity(id)}
+                              className={`segment ${density === id ? "active" : ""}`}
+                            >
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Масштаб шрифта (a11y) */}
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <ALargeSmall className="w-4 h-4 t3" />
+                            <span className="text-sm t1">{t("uiScaleLabel")}</span>
+                          </div>
+                          <span className="text-sm t2 font-mono">{uiScale}%</span>
+                        </div>
+                        <input
+                          type="range"
+                          min={85}
+                          max={130}
+                          step={5}
+                          value={uiScale}
+                          onChange={(e) => setUiScale(Number(e.target.value))}
+                          className="range"
+                        />
+                      </div>
+
+                      {/* Контрастность и анимация (a11y) */}
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Contrast className="w-4 h-4 t3" />
+                            <span className="text-sm t1">{t("highContrastLabel")}</span>
+                          </div>
+                          <Toggle label="" checked={highContrast} onChange={setHighContrast} />
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Sparkles className="w-4 h-4 t3" />
+                            <span className="text-sm t1">{t("reduceMotionLabel")}</span>
+                            <span className="text-xs t3">{t("reduceMotionHint")}</span>
+                          </div>
+                          <Toggle label="" checked={reduceMotion} onChange={setReduceMotion} />
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <ImageIcon className="w-4 h-4 t3" />
+                            <span className="text-sm t1">{t("faviconAutoFetchLabel")}</span>
+                          </div>
+                          <Toggle label="" checked={faviconAutoFetch} onChange={setFaviconAutoFetch} />
+                        </div>
+                      </div>
+
                       <div className="space-y-2 pt-4 divider border-t">
                         <div className="flex items-center gap-2">
                           <Globe className="w-4 h-4 t3" />
@@ -701,6 +822,19 @@ export function Settings({ isOpen, onClose }: SettingsProps) {
                                 <span className="text-xs t3">{t("backupInterval")}</span>
                                 <span className="text-xs t2 font-mono">{t("backupIntervalMin", backupIntervalMinutes)}</span>
                               </div>
+                              {/* Пресеты расписания */}
+                              <div className="grid grid-cols-5 gap-1.5">
+                                {[15, 60, 360, 1440, 10080].map((m) => (
+                                  <button
+                                    key={m}
+                                    onClick={() => setBackupIntervalMinutes(m)}
+                                    className={`segment !text-xs ${backupIntervalMinutes === m ? "active" : ""}`}
+                                    title={t("backupIntervalMin", m)}
+                                  >
+                                    {m < 60 ? `${m}m` : m < 1440 ? `${m / 60}h` : `${m / 1440}d`}
+                                  </button>
+                                ))}
+                              </div>
                               <input
                                 type="range"
                                 min={5}
@@ -751,6 +885,69 @@ export function Settings({ isOpen, onClose }: SettingsProps) {
                                 onChange={(e) => setBackupKeepCount(Number(e.target.value))}
                                 className="range"
                               />
+                            </div>
+
+                            {/* Статус последнего бэкапа + ручной запуск */}
+                            <div
+                              className="flex items-center justify-between gap-2 rounded-xl px-3 py-2.5"
+                              style={{
+                                background: "var(--field-bg)",
+                                border: "1px solid var(--field-border)",
+                              }}
+                            >
+                              <div className="min-w-0">
+                                <p className="text-xs t2 truncate">
+                                  {lastBackupAt === null
+                                    ? t("backupNever")
+                                    : `${t("backupLast")}: ${new Date(lastBackupAt).toLocaleString()}`}
+                                </p>
+                                <p
+                                  className="text-xs flex items-center gap-1"
+                                  style={{
+                                    color:
+                                      lastBackupAt === null
+                                        ? "var(--t3, var(--divider))"
+                                        : lastBackupOk
+                                        ? "var(--c-strong)"
+                                        : "var(--danger)",
+                                  }}
+                                >
+                                  <span
+                                    className="w-1.5 h-1.5 rounded-full inline-block"
+                                    style={{
+                                      background:
+                                        lastBackupAt === null
+                                          ? "var(--divider)"
+                                          : lastBackupOk
+                                          ? "var(--c-strong)"
+                                          : "var(--danger)",
+                                    }}
+                                  />
+                                  {lastBackupAt === null
+                                    ? t("backupStatusIdle")
+                                    : lastBackupOk
+                                    ? t("backupStatusOk")
+                                    : t("backupStatusFail")}
+                                </p>
+                              </div>
+                              <button
+                                onClick={runBackupNow}
+                                disabled={backupRunning || !activeVault}
+                                className="btn-ghost px-3 py-1.5 text-xs shrink-0"
+                              >
+                                {backupRunning ? (
+                                  <motion.span
+                                    animate={{ rotate: 360 }}
+                                    transition={{ duration: 0.8, repeat: Infinity, ease: "linear" }}
+                                    className="inline-flex"
+                                  >
+                                    <RefreshCw className="w-3.5 h-3.5" />
+                                  </motion.span>
+                                ) : (
+                                  <HardDriveDownload className="w-3.5 h-3.5" />
+                                )}
+                                {t("backupNow")}
+                              </button>
                             </div>
                           </>
                         )}
@@ -1146,8 +1343,14 @@ const IMPORT_FORMATS: { id: ImportFormat; labelKey: string }[] = [
   { id: "auto", labelKey: "importFormatAuto" },
   { id: "bitwarden-json", labelKey: "importFmtBitwardenJson" },
   { id: "bitwarden-csv", labelKey: "importFmtBitwardenCsv" },
+  { id: "onepassword-json", labelKey: "importFmt1PasswordJson" },
   { id: "onepassword-csv", labelKey: "importFmt1Password" },
   { id: "keepass-csv", labelKey: "importFmtKeePass" },
+  { id: "keepassxc-json", labelKey: "importFmtKeePassXcJson" },
+  { id: "lastpass-csv", labelKey: "importFmtLastPass" },
+  { id: "dashlane-csv", labelKey: "importFmtDashlane" },
+  { id: "protonpass-csv", labelKey: "importFmtProtonPass" },
+  { id: "firefox-csv", labelKey: "importFmtFirefox" },
   { id: "chrome-csv", labelKey: "importFmtChrome" },
 ];
 
@@ -1163,9 +1366,15 @@ function ImportModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => void
   const [parsed, setParsed] = useState<ImportResult | null>(null);
   const [parseError, setParseError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [done, setDone] = useState<{ imported: number; skipped: number; errors: number } | null>(
-    null
-  );
+  /** Что делать с дублями: пропустить / слить / создать копию */
+  const [strategy, setStrategy] = useState<MergeStrategy>("merge");
+  const [done, setDone] = useState<{
+    imported: number;
+    skipped: number;
+    errors: number;
+    merged: number;
+    dupSkipped: number;
+  } | null>(null);
 
   const wipeParsed = () => {
     if (parsedRef.current) {
@@ -1187,6 +1396,7 @@ function ImportModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => void
     setParsed(null);
     setParseError(null);
     setBusy(false);
+    setStrategy("merge");
     setDone(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
   }, [isOpen]);
@@ -1215,11 +1425,21 @@ function ImportModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => void
     }
   };
 
+  // Предпросмотр дублей: считаем на каждый разобранный файл
+  const duplicates = useMemo(() => {
+    if (!parsed) return [] as (DuplicateMatch | null)[];
+    const existing = useVaultStore.getState().entries;
+    return parsed.drafts.map((d) => findDuplicate(existing, d));
+  }, [parsed]);
+  const dupCount = duplicates.filter(Boolean).length;
+
   const runImport = () => {
     if (!parsed || busy) return;
     setBusy(true);
     let imported = 0;
     let errors = 0;
+    let merged = 0;
+    let dupSkipped = 0;
     try {
       // Папки исходного файла → категории vault
       const catStore = useCategoryStore.getState();
@@ -1236,17 +1456,36 @@ function ImportModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => void
         }
       }
 
-      for (const draft of parsed.drafts) {
+      const resolveCategory = (draftCat: string) =>
+        draftCat ? (folderToCategory.get(draftCat) ?? draftCat) : "";
+
+      parsed.drafts.forEach((draft, i) => {
         try {
+          const dup = duplicates[i];
+          if (dup) {
+            if (strategy === "skip") {
+              dupSkipped++;
+              return;
+            }
+            if (strategy === "merge") {
+              const patch = mergeDraftIntoEntry(dup.entry, draft);
+              const cat = resolveCategory(draft.category);
+              if (cat && !dup.entry.category) patch.category = cat;
+              if (Object.keys(patch).length > 0) {
+                useVaultStore.getState().updateEntry(dup.entry.id, patch);
+              }
+              merged++;
+              return;
+            }
+            // strategy === "duplicate" — падаем ниже и создаём копию
+          }
           addEntry({
             id: crypto.randomUUID(),
             title: draft.title,
             username: draft.username,
             password: draft.password,
             url: draft.url,
-            category: draft.category
-              ? folderToCategory.get(draft.category) ?? draft.category
-              : "",
+            category: resolveCategory(draft.category),
             tags: [],
             favorite: draft.favorite,
             strength: calculateStrength(draft.password),
@@ -1259,8 +1498,8 @@ function ImportModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => void
         } catch {
           errors++;
         }
-      }
-      setDone({ imported, skipped: parsed.skipped, errors });
+      });
+      setDone({ imported, skipped: parsed.skipped, errors, merged, dupSkipped });
     } finally {
       wipeParsed();
       setBusy(false);
@@ -1285,6 +1524,12 @@ function ImportModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => void
             <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" />
             <span>{t("importDone", done.imported, done.skipped, done.errors)}</span>
           </div>
+          {(done.merged > 0 || done.dupSkipped > 0) && (
+            <div className="flex items-start gap-2 text-sm t2">
+              <GitMerge className="w-4 h-4 mt-0.5 shrink-0" style={{ color: "var(--info)" }} />
+              <span>{t("importDedup", done.merged, done.dupSkipped)}</span>
+            </div>
+          )}
           <button onClick={close} className="btn-primary w-full py-2.5 text-sm">
             {t("close")}
           </button>
@@ -1346,6 +1591,38 @@ function ImportModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => void
                 <p>{t("importPreview", parsed.drafts.length, parsed.folders.length)}</p>
                 {parsed.skipped > 0 && (
                   <p className="text-xs t3">{t("importPreviewSkipped", parsed.skipped)}</p>
+                )}
+                {dupCount > 0 && (
+                  <div className="pt-2 space-y-2">
+                    <p className="flex items-center gap-2 text-xs" style={{ color: "var(--warn)" }}>
+                      <GitMerge className="w-3.5 h-3.5" />
+                      {t("importDuplicatesFound", dupCount)}
+                    </p>
+                    <div className="grid grid-cols-3 gap-2">
+                      {(
+                        [
+                          ["merge", t("importStrategyMerge")],
+                          ["skip", t("importStrategySkip")],
+                          ["duplicate", t("importStrategyDuplicate")],
+                        ] as const
+                      ).map(([id, label]) => (
+                        <button
+                          key={id}
+                          onClick={() => setStrategy(id)}
+                          className={`segment ${strategy === id ? "active" : ""} !text-xs`}
+                          title={
+                            id === "merge"
+                              ? t("importStrategyMergeHint")
+                              : id === "skip"
+                              ? t("importStrategySkipHint")
+                              : t("importStrategyDuplicateHint")
+                          }
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 )}
               </div>
             ) : (

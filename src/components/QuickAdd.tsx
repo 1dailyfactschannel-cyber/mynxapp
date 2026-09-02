@@ -5,6 +5,8 @@ import { GlassCard } from "@/components/GlassCard";
 import { useVaultStore, calculateStrength, generateRandomPassword, type CustomField } from "@/stores/vault";
 import { useCategoryStore, getCategoryLabel } from "@/stores/categories";
 import { useI18n } from "@/i18n";
+import { useSettingsStore } from "@/stores/settings";
+import { fetchFaviconDataUrl } from "@/lib/favicons";
 
 interface QuickAddProps {
   isOpen: boolean;
@@ -55,8 +57,9 @@ export function QuickAdd({ isOpen, onClose }: QuickAddProps) {
   const handleSave = () => {
     if (!title || !password) return;
 
+    const id = crypto.randomUUID();
     addEntry({
-      id: crypto.randomUUID(),
+      id,
       title,
       username,
       password,
@@ -72,6 +75,14 @@ export function QuickAdd({ isOpen, onClose }: QuickAddProps) {
       notes: notes || undefined,
       customFields: customFields.length > 0 ? customFields : undefined,
     });
+
+    // Favicon-автозаполнение: тянем иконку сайта в фоне, если включено
+    const { faviconAutoFetch } = useSettingsStore.getState();
+    if (faviconAutoFetch && url) {
+      void fetchFaviconDataUrl(url).then((dataUrl) => {
+        if (dataUrl) useVaultStore.getState().updateEntry(id, { favicon: dataUrl });
+      });
+    }
 
     onClose();
   };

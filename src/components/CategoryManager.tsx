@@ -1,9 +1,14 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { X, Plus, Pencil, Trash2, Check, AlertTriangle } from "lucide-react";
+import { X, Plus, Pencil, Trash2, Check, AlertTriangle, ArrowUp, ArrowDown } from "lucide-react";
 import { GlassCard } from "@/components/GlassCard";
 import { useI18n } from "@/i18n";
-import { useCategoryStore, type Category, getCategoryLabel } from "@/stores/categories";
+import {
+  useCategoryStore,
+  type Category,
+  getCategoryLabel,
+  orderedCategories,
+} from "@/stores/categories";
 import { getIconComponent } from "@/lib/icons";
 import { useVaultStore } from "@/stores/vault";
 
@@ -18,6 +23,7 @@ export function CategoryManager({ isOpen, onClose }: CategoryManagerProps) {
   const addCategory = useCategoryStore((s) => s.addCategory);
   const updateCategory = useCategoryStore((s) => s.updateCategory);
   const deleteCategory = useCategoryStore((s) => s.deleteCategory);
+  const moveCategory = useCategoryStore((s) => s.moveCategory);
   const updateEntries = useVaultStore((s) => s.updateEntry);
   const entries = useVaultStore((s) => s.entries);
 
@@ -111,7 +117,7 @@ export function CategoryManager({ isOpen, onClose }: CategoryManagerProps) {
             </form>
 
             <div className="space-y-2">
-              {categories.map((cat) => {
+              {orderedCategories(categories).map((cat, idx, arr) => {
                 const Icon = getIconComponent(cat.icon);
                 const isEditing = editingId === cat.id;
                 const isDeleting = deleteId === cat.id;
@@ -143,6 +149,23 @@ export function CategoryManager({ isOpen, onClose }: CategoryManagerProps) {
                       </button>
                     ) : (
                       <>
+                        {/* Клавиатурная альтернатива drag&drop-сортировке */}
+                        <button
+                          onClick={() => moveCategory(cat.id, -1)}
+                          className="icon-btn"
+                          title={t("moveUp")}
+                          disabled={idx === 0}
+                        >
+                          <ArrowUp className="w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={() => moveCategory(cat.id, 1)}
+                          className="icon-btn"
+                          title={t("moveDown")}
+                          disabled={idx === arr.length - 1}
+                        >
+                          <ArrowDown className="w-4 h-4" />
+                        </button>
                         <button
                           onClick={() => startEdit(cat)}
                           className="icon-btn"

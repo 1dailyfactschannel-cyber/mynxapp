@@ -18,6 +18,8 @@ import {
   Keyboard,
   Plus,
   History,
+  ImageIcon,
+  Loader2,
 } from "lucide-react";
 import { motion } from "framer-motion";
 import { TOTPGenerator } from "@/components/TOTPGenerator";
@@ -27,6 +29,7 @@ import { isTauri } from "@/stores/app";
 import { useVaultStore, generateRandomPassword, calculateStrength, type Entry, type CustomField } from "@/stores/vault";
 import { useCategoryStore, getCategoryLabel } from "@/stores/categories";
 import { useSettingsStore } from "@/stores/settings";
+import { fetchFaviconDataUrl } from "@/lib/favicons";
 
 interface EntryDetailProps {
   entry: Entry | null;
@@ -47,6 +50,8 @@ export function EntryDetail({ entry, isOpen, onClose, onDelete, onToggleFavorite
   const [historyOpen, setHistoryOpen] = useState(false);
   const [showFieldMenu, setShowFieldMenu] = useState(false);
   const [visibleCustomFields, setVisibleCustomFields] = useState<Set<string>>(new Set());
+  /** Идёт загрузка favicon для текущей записи */
+  const [faviconBusy, setFaviconBusy] = useState(false);
 
   // Локальный черновик для редактирования
   const [draft, setDraft] = useState<Entry | null>(null);
@@ -66,6 +71,7 @@ export function EntryDetail({ entry, isOpen, onClose, onDelete, onToggleFavorite
     setHistoryOpen(false);
     setShowFieldMenu(false);
     setVisibleCustomFields(new Set());
+    setFaviconBusy(false);
   }, [entry?.id, isOpen]);
 
   // Авто-скрытие паролей по таймеру из настроек
@@ -128,8 +134,30 @@ export function EntryDetail({ entry, isOpen, onClose, onDelete, onToggleFavorite
       customFields: draft.customFields,
       strength: calculateStrength(draft.password),
     });
+    // URL изменился — favicon устарел: тянем новый, если включён автопоиск
+    if (draft.url !== entry.url) {
+      updateEntry(entry.id, { favicon: undefined });
+      const { faviconAutoFetch } = useSettingsStore.getState();
+      if (faviconAutoFetch && draft.url) {
+        void fetchFaviconDataUrl(draft.url).then((dataUrl) => {
+          if (dataUrl) updateEntry(entry.id, { favicon: dataUrl });
+        });
+      }
+    }
     setIsEditing(false);
     setDraft(null);
+  };
+
+  const handleFetchFavicon = async () => {
+    if (faviconBusy) return;
+    setFaviconBusy(true);
+    const url = shown.url;
+    try {
+      const dataUrl = await fetchFaviconDataUrl(url);
+      if (dataUrl) updateEntry(entry.id, { favicon: dataUrl });
+    } finally {
+      setFaviconBusy(false);
+    }
   };
 
   const shown = isEditing && draft ? draft : entry;
@@ -257,7 +285,18 @@ export function EntryDetail({ entry, isOpen, onClose, onDelete, onToggleFavorite
         >
           <div className="flex items-center gap-3 min-w-0">
             <div className="icon-tile w-10 h-10 rounded-xl flex items-center justify-center text-lg flex-shrink-0">
-              {entry.icon || "🔐"}
+              {entry.favicon ? (
+                <img
+                  src={entry.favicon}
+                  alt=""
+                  width={24}
+                  height={24}
+                  className="w-6 h-6 rounded object-contain"
+                  draggable={false}
+                />
+              ) : (
+                entry.icon || "🔐"
+              )}
             </div>
             <div className="min-w-0">
               {isEditing && draft ? (
@@ -435,6 +474,20 @@ export function EntryDetail({ entry, isOpen, onClose, onDelete, onToggleFavorite
                 }
                 className="field flex-1 rounded-xl px-4 py-3 text-sm"
               />
+              {isTauri && shown.url && (
+                <button
+                  onClick={handleFetchFavicon}
+                  className="icon-btn"
+                  title={t("faviconFetch")}
+                  disabled={faviconBusy}
+                >
+                  {faviconBusy ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <ImageIcon className="w-4 h-4" />
+                  )}
+                </button>
+              )}
               {safeExternalUrl(entry.url) && (
                 <a
                   href={safeExternalUrl(entry.url) as string}

@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Lock, Shield, Dice5, Settings as SettingsIcon, Command, HeartPulse, Clock, GraduationCap, RotateCcw, Trash2 } from "lucide-react";
+import { Lock, Dice5, Settings as SettingsIcon, Command, HeartPulse, Clock, GraduationCap, RotateCcw, Trash2 } from "lucide-react";
 import { GlassCard } from "@/components/GlassCard";
 import type { ShortcutEvent } from "@tauri-apps/plugin-global-shortcut";
 import { Sidebar } from "@/components/Sidebar";
@@ -13,6 +13,8 @@ import { CommandPalette } from "@/components/CommandPalette";
 import { HealthDashboard } from "@/components/HealthDashboard";
 import { Tutorial } from "@/components/Tutorial";
 import { AttachmentsView } from "@/components/AttachmentsView";
+import { PasskeysView } from "@/components/PasskeysView";
+import { EmptyState } from "@/components/EmptyState";
 import { AutoTypePicker } from "@/components/AutoTypePicker";
 import { matchEntries } from "@/lib/autotype";
 import { useAppStore, isTauri } from "@/stores/app";
@@ -37,6 +39,7 @@ export function VaultScreen() {
   const autoLockMinutes = useSettingsStore((s) => s.autoLockMinutes);
   const clipboardSeconds = useSettingsStore((s) => s.clipboardClearSeconds);
   const clipboardEnabled = useSettingsStore((s) => s.clipboardClearEnabled);
+  const density = useSettingsStore((s) => s.density);
   const clipTimeLeft = useClipboardStore((s) => s.timeLeft);
   const clipActive = useClipboardStore((s) => s.isActive);
   const clipboardCopy = useClipboardStore((s) => s.copy);
@@ -49,6 +52,7 @@ export function VaultScreen() {
   const [healthOpen, setHealthOpen] = useState(false);
   const [tutorialOpen, setTutorialOpen] = useState(false);
   const [attachmentsOpen, setAttachmentsOpen] = useState(false);
+  const [passkeysOpen, setPasskeysOpen] = useState(false);
   const [autoTypePick, setAutoTypePick] = useState<{ windowTitle: string; matches: Entry[] } | null>(null);
 
   const { t } = useI18n();
@@ -240,6 +244,33 @@ export function VaultScreen() {
     clipboardCopy(password, clipboardSeconds, clipboardEnabled);
   };
 
+  /* Клавиатурная навигация по списку записей: стрелки, Home/End, Enter/Space.
+     Карточки несут data-entry-id и tabIndex=0; фокус перемещается контейнером. */
+  const handleListKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!e.currentTarget.querySelector("[data-entry-id]")) return;
+    const items = Array.from(
+      e.currentTarget.querySelectorAll<HTMLElement>("[data-entry-id]")
+    );
+    if (items.length === 0) return;
+    const activeIdx = items.indexOf(document.activeElement as HTMLElement);
+    let next = -1;
+    if (e.key === "ArrowDown") next = activeIdx < 0 ? 0 : Math.min(items.length - 1, activeIdx + 1);
+    else if (e.key === "ArrowUp") next = activeIdx < 0 ? items.length - 1 : Math.max(0, activeIdx - 1);
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = items.length - 1;
+    else if ((e.key === "Enter" || e.key === " ") && activeIdx >= 0) {
+      // Enter обрабатывает сама карточка; Space — здесь, чтобы не скроллить
+      if (e.key === " ") {
+        e.preventDefault();
+        (items[activeIdx] as HTMLElement).click();
+      }
+      return;
+    } else return;
+
+    e.preventDefault();
+    if (next >= 0) items[next]?.focus();
+  };
+
   const filteredEntries = useMemo(() => {
     let result = entries;
 
@@ -287,6 +318,8 @@ export function VaultScreen() {
         onSelectCategory={(id) => {
           if (id === "Attachments") {
             setAttachmentsOpen(true);
+          } else if (id === "Passkeys") {
+            setPasskeysOpen(true);
           } else {
             setSelectedCategory(id);
           }
@@ -405,18 +438,37 @@ export function VaultScreen() {
         <div className="flex-1 overflow-y-auto p-6">
           <AnimatePresence mode="popLayout">
             {filteredEntries.length === 0 ? (
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                className="flex flex-col items-center justify-center h-64 t3"
-              >
-                <Shield className="w-12 h-12 mb-4 opacity-30" />
-                <p>{t("noEntriesFound")}</p>
-                <p className="text-sm mt-1">{t("tryDifferent")}</p>
-              </motion.div>
+              <EmptyState
+                variant={
+                  selectedCategory === "Trash"
+                    ? "trash"
+                    : searchQuery
+                    ? "search"
+                    : "category"
+                }
+                title={
+                  selectedCategory === "Trash"
+                    ? t("trashEmptyTitle")
+                    : searchQuery
+                    ? t("noEntriesFound")
+                    : t("categoryEmptyTitle")
+                }
+                hint={searchQuery ? t("tryDifferent") : t("emptyCategoryHint")}
+                action={
+                  !searchQuery && selectedCategory !== "Trash" ? (
+                    <button onClick={() => setQuickAddOpen(true)} className="btn-primary px-4 py-2 text-sm">
+                      {t("newEntry")}
+                    </button>
+                  ) : undefined
+                }
+              />
             ) : (
-              <div className="grid gap-3 max-w-2xl">
-                {filteredEntries.map((entry) =>
+              <div
+                className={`entry-list density-${density} grid gap-3 max-w-2xl`}
+                onKeyDown={handleListKeyDown}
+                role="list"
+              >
+                {filteredEntries.map((entry, idx) =>
                   selectedCategory === "Trash" ? (
                     <TrashEntryCard
                       key={entry.id}
@@ -434,6 +486,7 @@ export function VaultScreen() {
                     <EntryCard
                       key={entry.id}
                       entry={entry}
+                      appearDelay={Math.min(idx * 0.03, 0.3)}
                       onSelect={handleSelectEntry}
                       onCopyPassword={handleCopyPassword}
                       onToggleFavorite={toggleFavorite}
@@ -481,6 +534,8 @@ export function VaultScreen() {
         <Tutorial isOpen={tutorialOpen} onClose={() => setTutorialOpen(false)} />
 
         <AttachmentsView isOpen={attachmentsOpen} onClose={() => setAttachmentsOpen(false)} />
+
+        <PasskeysView isOpen={passkeysOpen} onClose={() => setPasskeysOpen(false)} />
 
         {autoTypePick && (
           <AutoTypePicker

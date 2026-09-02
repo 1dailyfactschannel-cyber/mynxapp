@@ -23,6 +23,8 @@ export interface Entry {
   favorite: boolean;
   strength: number;
   icon?: string;
+  /** Favicon сайта (data: URL); подтягивается автоматически по url */
+  favicon?: string;
   totpSecret?: string;
   createdAt?: number;
   updatedAt?: number;

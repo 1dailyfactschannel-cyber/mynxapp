@@ -14,6 +14,7 @@ mod auto_type;
 use auto_type::{auto_type_credentials, auto_type_text, get_foreground_window};
 mod commands;
 mod api;
+mod favicon;
 mod clipboard;
 mod ipc;
 mod logging;
@@ -38,6 +39,7 @@ use commands::{
     set_autolock_minutes, AppState,
 };
 use clipboard::{clipboard_history_set_enabled, clipboard_set_secure};
+use favicon::fetch_favicon;
 use hotkey::{tray_hotkey_get, tray_hotkey_pause, tray_hotkey_set};
 use biometry::{
     biometry_disable, biometry_enable, biometry_is_available, biometry_is_enabled,
@@ -206,6 +208,7 @@ pub fn main() {
             tray_hotkey_get,
             tray_hotkey_pause,
             tray_hotkey_set,
+            fetch_favicon,
             biometry_is_available,
             biometry_is_enabled,
             biometry_enable,

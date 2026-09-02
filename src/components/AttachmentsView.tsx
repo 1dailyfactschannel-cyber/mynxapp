@@ -15,8 +15,10 @@ import {
   CheckCircle2,
 } from "lucide-react";
 import { GlassCard } from "@/components/GlassCard";
+import { EmptyState } from "@/components/EmptyState";
 import { useAttachmentsStore, type Attachment, type AttachmentFolder } from "@/stores/attachments";
 import { useI18n } from "@/i18n";
+import { ATTACHMENT_MIME, FOLDER_MIME, hasDragType, getDragId } from "@/lib/dnd";
 
 interface AttachmentsViewProps {
   isOpen: boolean;
@@ -35,6 +37,9 @@ export function AttachmentsView({ isOpen, onClose }: AttachmentsViewProps) {
   const addAttachment = useAttachmentsStore((s) => s.addAttachment);
   const renameAttachment = useAttachmentsStore((s) => s.renameAttachment);
   const deleteAttachment = useAttachmentsStore((s) => s.deleteAttachment);
+  const moveAttachment = useAttachmentsStore((s) => s.moveAttachment);
+  const reorderAttachments = useAttachmentsStore((s) => s.reorderAttachments);
+  const reorderFolders = useAttachmentsStore((s) => s.reorderFolders);
 
   const [newFolderName, setNewFolderName] = useState("");
   const [creatingFolder, setCreatingFolder] = useState(false);
@@ -44,6 +49,8 @@ export function AttachmentsView({ isOpen, onClose }: AttachmentsViewProps) {
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [previewAttachment, setPreviewAttachment] = useState<Attachment | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  /** id цели drag&drop (папка или вложение) */
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
 
   const isImage = (mimeType: string) => mimeType.startsWith("image/");
 
@@ -51,13 +58,16 @@ export function AttachmentsView({ isOpen, onClose }: AttachmentsViewProps) {
     const buildTree = (parentId: string | null): AttachmentFolder[] => {
       return folders
         .filter((f) => f.parentId === parentId)
+        .sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.name.localeCompare(b.name))
         .map((f) => ({ ...f, children: buildTree(f.id) }));
     };
     return buildTree(null);
   }, [folders]);
 
   const currentAttachments = useMemo(() => {
-    return attachments.filter((a) => a.folderId === selectedFolderId);
+    return attachments
+      .filter((a) => a.folderId === selectedFolderId)
+      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.createdAt - b.createdAt);
   }, [attachments, selectedFolderId]);
 
   const currentFolder = folders.find((f) => f.id === selectedFolderId);
@@ -136,17 +146,47 @@ export function AttachmentsView({ isOpen, onClose }: AttachmentsViewProps) {
     const hasChildren = (folder.children?.length || 0) > 0;
     const isExpanded = expandedFolders.has(folder.id);
     const isSelected = selectedFolderId === folder.id;
+    const isDropTarget = dropTarget === `folder:${folder.id}`;
 
     return (
       <div key={folder.id}>
         <div
           className={`flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer text-sm ${
             isSelected ? "soft-accent" : "hover:bg-[var(--btn-ghost-bg)]"
-          }`}
+          } ${isDropTarget ? "drop-target" : ""}`}
           style={{ paddingLeft: `${depth * 16 + 12}px` }}
           onClick={() => {
             setSelectedFolderId(folder.id);
             if (hasChildren) toggleFolder(folder.id);
+          }}
+          draggable
+          onDragStart={(e) => {
+            e.dataTransfer.setData(FOLDER_MIME, folder.id);
+            e.dataTransfer.effectAllowed = "move";
+          }}
+          onDragOver={(e) => {
+            if (hasDragType(e, ATTACHMENT_MIME) || hasDragType(e, FOLDER_MIME)) {
+              e.preventDefault();
+              e.dataTransfer.dropEffect = "move";
+              setDropTarget(`folder:${folder.id}`);
+            }
+          }}
+          onDragLeave={() =>
+            setDropTarget((cur) => (cur === `folder:${folder.id}` ? null : cur))
+          }
+          onDrop={(e) => {
+            e.preventDefault();
+            setDropTarget(null);
+            const attId = getDragId(e, ATTACHMENT_MIME);
+            if (attId) {
+              // Файл перетащили в папку
+              moveAttachment(attId, folder.id);
+              return;
+            }
+            const draggedFolder = getDragId(e, FOLDER_MIME);
+            if (draggedFolder && draggedFolder !== folder.id) {
+              reorderFolders(draggedFolder, folder.id);
+            }
           }}
         >
           {hasChildren ? (
@@ -225,7 +265,23 @@ export function AttachmentsView({ isOpen, onClose }: AttachmentsViewProps) {
                   onClick={() => setSelectedFolderId(null)}
                   className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm ${
                     selectedFolderId === null ? "soft-accent" : "hover:bg-[var(--btn-ghost-bg)]"
-                  }`}
+                  } ${dropTarget === "folder:root" ? "drop-target" : ""}`}
+                  onDragOver={(e) => {
+                    if (hasDragType(e, ATTACHMENT_MIME)) {
+                      e.preventDefault();
+                      e.dataTransfer.dropEffect = "move";
+                      setDropTarget("folder:root");
+                    }
+                  }}
+                  onDragLeave={() =>
+                    setDropTarget((cur) => (cur === "folder:root" ? null : cur))
+                  }
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setDropTarget(null);
+                    const attId = getDragId(e, ATTACHMENT_MIME);
+                    if (attId) moveAttachment(attId, null);
+                  }}
                 >
                   <Folder className="w-4 h-4" />
                   <span>{t("attachmentsRoot")}</span>
@@ -283,14 +339,41 @@ export function AttachmentsView({ isOpen, onClose }: AttachmentsViewProps) {
 
               <div className="flex-1 overflow-y-auto p-4">
                 {currentAttachments.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center h-64 t3">
-                    <File className="w-12 h-12 mb-4 opacity-30" />
-                    <p>{t("attachmentsEmpty")}</p>
-                  </div>
+                  <EmptyState
+                    variant="attachments"
+                    title={t("attachmentsEmpty")}
+                    hint={t("dndAttachmentHint")}
+                  />
                 ) : (
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                     {currentAttachments.map((attachment) => (
-                      <GlassCard key={attachment.id} className="p-4 group relative">
+                      <GlassCard
+                        key={attachment.id}
+                        className={`p-4 group relative ${dropTarget === `att:${attachment.id}` ? "drop-target" : ""}`}
+                        draggable
+                        onDragStart={(e) => {
+                          e.dataTransfer.setData(ATTACHMENT_MIME, attachment.id);
+                          e.dataTransfer.effectAllowed = "move";
+                        }}
+                        onDragOver={(e) => {
+                          if (hasDragType(e, ATTACHMENT_MIME)) {
+                            e.preventDefault();
+                            e.dataTransfer.dropEffect = "move";
+                            setDropTarget(`att:${attachment.id}`);
+                          }
+                        }}
+                        onDragLeave={() =>
+                          setDropTarget((cur) => (cur === `att:${attachment.id}` ? null : cur))
+                        }
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          setDropTarget(null);
+                          const dragged = getDragId(e, ATTACHMENT_MIME);
+                          if (dragged && dragged !== attachment.id) {
+                            reorderAttachments(dragged, attachment.id);
+                          }
+                        }}
+                      >
                         <div className="flex items-start justify-between mb-3">
                           {isImage(attachment.mimeType) ? (
                             <button

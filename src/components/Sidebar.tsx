@@ -2,11 +2,18 @@ import { Search, Plus, Shield, Settings2 } from "lucide-react";
 import { motion } from "framer-motion";
 import { useI18n, entriesCountLabel } from "@/i18n";
 import type { Entry } from "@/stores/vault";
+import { useVaultStore } from "@/stores/vault";
 import { useMemo, useState } from "react";
-import { useCategoryStore, getCategoryLabel } from "@/stores/categories";
+import {
+  useCategoryStore,
+  getCategoryLabel,
+  orderedCategories,
+} from "@/stores/categories";
 import { useAttachmentsStore } from "@/stores/attachments";
+import { usePasskeysStore } from "@/stores/passkeys";
 import { getIconComponent } from "@/lib/icons";
 import { CategoryManager } from "@/components/CategoryManager";
+import { ENTRY_MIME, CATEGORY_MIME, hasDragType, getDragId } from "@/lib/dnd";
 
 interface SidebarProps {
   selectedCategory: string;
@@ -27,8 +34,12 @@ export function Sidebar({
 }: SidebarProps) {
   const { t, lang } = useI18n();
   const categories = useCategoryStore((s) => s.categories);
+  const reorderCategories = useCategoryStore((s) => s.reorderCategories);
   const attachmentsCount = useAttachmentsStore((s) => s.attachments.length);
+  const passkeysCount = usePasskeysStore((s) => s.passkeys.length);
   const [managerOpen, setManagerOpen] = useState(false);
+  /** id категории-цели под курсором при drag&drop */
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
 
   // Живые счётчики по категориям
   const counts = useMemo(() => {
@@ -41,16 +52,43 @@ export function Sidebar({
     }
     map.Trash = trashed.length;
     map.Attachments = attachmentsCount;
+    map.Passkeys = passkeysCount;
     return map;
-  }, [entries, attachmentsCount]);
+  }, [entries, attachmentsCount, passkeysCount]);
 
   const allCategories = [
     { id: "All", icon: "Shield", system: true },
     { id: "Favorites", icon: "Star", system: true },
-    ...categories,
+    ...orderedCategories(categories),
+    { id: "Passkeys", icon: "Fingerprint", system: true },
     { id: "Trash", icon: "Trash2", system: true },
     { id: "Attachments", icon: "File", system: true },
   ];
+
+  const handleDragOver = (e: React.DragEvent, catId: string, system: boolean) => {
+    // Записи можно бросать только в пользовательские категории;
+    // категории переупорядочиваются тоже только среди своих
+    if (system) return;
+    if (hasDragType(e, ENTRY_MIME) || hasDragType(e, CATEGORY_MIME)) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      setDropTarget(catId);
+    }
+  };
+
+  const handleDrop = (e: React.DragEvent, targetId: string, system: boolean) => {
+    e.preventDefault();
+    setDropTarget(null);
+    if (system) return;
+    const entryId = getDragId(e, ENTRY_MIME);
+    if (entryId) {
+      // Запись переложена в категорию (drag&drop из списка)
+      useVaultStore.getState().updateEntry(entryId, { category: targetId });
+      return;
+    }
+    const draggedCatId = getDragId(e, CATEGORY_MIME);
+    if (draggedCatId) reorderCategories(draggedCatId, targetId);
+  };
 
   return (
     <>
@@ -120,16 +158,31 @@ export function Sidebar({
                     : t(`cat.${cat.id}`)
                   : cat.id === "Attachments"
                     ? t("attachmentsTitle")
-                    : getCategoryLabel(cat as any, t);
+                    : cat.id === "Passkeys"
+                      ? t("passkeysTitle")
+                      : getCategoryLabel(cat as any, t);
               return (
                 <motion.button
                   key={cat.id}
                   whileHover={{ x: 2 }}
                   whileTap={{ scale: 0.98 }}
                   onClick={() => onSelectCategory(cat.id)}
+                  draggable={!cat.system}
+                  onDragStart={(e) => {
+                    if (cat.system) return;
+                    const de = e as unknown as React.DragEvent;
+                    de.dataTransfer.setData(CATEGORY_MIME, cat.id);
+                    de.dataTransfer.effectAllowed = "move";
+                  }}
+                  onDragOver={(e) => handleDragOver(e, cat.id, !!cat.system)}
+                  onDragLeave={() =>
+                    setDropTarget((cur) => (cur === cat.id ? null : cur))
+                  }
+                  onDrop={(e) => handleDrop(e, cat.id, !!cat.system)}
                   className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm transition-all border ${
                     isActive ? "soft-accent" : "border-transparent t2 hover:[background:var(--btn-ghost-bg)] hover:t1"
-                  }`}
+                  } ${dropTarget === cat.id ? "drop-target" : ""}`}
+                  title={!cat.system ? t("dndCategoryHint") : undefined}
                 >
                   <Icon className="w-4 h-4" />
                   <span className="flex-1 text-left">{label}</span>

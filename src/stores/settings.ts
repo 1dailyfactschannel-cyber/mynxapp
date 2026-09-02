@@ -2,6 +2,9 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { invoke } from "@tauri-apps/api/core";
 
+/** Плотность интерфейса списка записей */
+export type DensityMode = "compact" | "cozy" | "spacious";
+
 interface SettingsState {
   /** Автоблокировка, минуты бездействия */
   autoLockMinutes: number;
@@ -45,6 +48,24 @@ interface SettingsState {
   /** Путь для скачивания вложений */
   downloadPath: string;
 
+  /** Плотность интерфейса (размер карточек и отступов) */
+  density: DensityMode;
+  /** Масштаб шрифта, % (85–130; 100 — по умолчанию) */
+  uiScale: number;
+  /** Повышенная контрастность (a11y) */
+  highContrast: boolean;
+  /** Уменьшенная анимация (a11y + системная prefers-reduced-motion) */
+  reduceMotion: boolean;
+  /** Автоматически подтягивать favicon для записей с URL */
+  faviconAutoFetch: boolean;
+  /** Порог ротации пароля, дней (health-панель, «пора ротировать») */
+  rotationThresholdDays: number;
+
+  /** Время последнего автоматического бэкапа (epoch ms), null — ещё не было */
+  lastBackupAt: number | null;
+  /** Результат последнего бэкапа: true — успех */
+  lastBackupOk: boolean;
+
   setAutoLockMinutes: (v: number) => void;
   setClipboardClearSeconds: (v: number) => void;
   setClipboardClearEnabled: (v: boolean) => void;
@@ -65,6 +86,14 @@ interface SettingsState {
   setTrashRetentionDays: (v: number) => void;
   setPasswordHideSeconds: (v: number) => void;
   setDownloadPath: (v: string) => void;
+
+  setDensity: (v: DensityMode) => void;
+  setUiScale: (v: number) => void;
+  setHighContrast: (v: boolean) => void;
+  setReduceMotion: (v: boolean) => void;
+  setFaviconAutoFetch: (v: boolean) => void;
+  setRotationThresholdDays: (v: number) => void;
+  setLastBackup: (at: number, ok: boolean) => void;
 }
 
 export const useSettingsStore = create<SettingsState>()(
@@ -93,6 +122,16 @@ export const useSettingsStore = create<SettingsState>()(
       passwordHideSeconds: 60,
       downloadPath: "Downloads",
 
+      density: "cozy",
+      uiScale: 100,
+      highContrast: false,
+      reduceMotion: false,
+      faviconAutoFetch: true,
+      rotationThresholdDays: 180,
+
+      lastBackupAt: null,
+      lastBackupOk: true,
+
       setAutoLockMinutes: (v) => set({ autoLockMinutes: v }),
       setClipboardClearSeconds: (v) => set({ clipboardClearSeconds: v }),
       setClipboardClearEnabled: (v) => set({ clipboardClearEnabled: v }),
@@ -113,6 +152,14 @@ export const useSettingsStore = create<SettingsState>()(
       setTrashRetentionDays: (v) => set({ trashRetentionDays: v }),
       setPasswordHideSeconds: (v) => set({ passwordHideSeconds: v }),
       setDownloadPath: (v) => set({ downloadPath: v }),
+
+      setDensity: (v) => set({ density: v }),
+      setUiScale: (v) => set({ uiScale: v }),
+      setHighContrast: (v) => set({ highContrast: v }),
+      setReduceMotion: (v) => set({ reduceMotion: v }),
+      setFaviconAutoFetch: (v) => set({ faviconAutoFetch: v }),
+      setRotationThresholdDays: (v) => set({ rotationThresholdDays: v }),
+      setLastBackup: (at, ok) => set({ lastBackupAt: at, lastBackupOk: ok }),
     }),
     {
       name: "mynx-settings",
@@ -120,6 +167,21 @@ export const useSettingsStore = create<SettingsState>()(
     }
   )
 );
+
+/**
+ * Применяет a11y-настройки к корневому элементу:
+ * масштаб шрифта (tailwind использует rem — масштабируется текст, отступы
+ * и высоты на его основе), атрибуты контрастности и reduced-motion.
+ */
+export function applyAccessibility(uiScale: number, highContrast: boolean, reduceMotion: boolean) {
+  const root = document.documentElement;
+  const scale = Math.min(1.3, Math.max(0.85, uiScale / 100));
+  root.style.fontSize = `${(16 * scale).toFixed(2)}px`;
+  if (highContrast) root.setAttribute("data-contrast", "high");
+  else root.removeAttribute("data-contrast");
+  if (reduceMotion) root.setAttribute("data-motion", "reduced");
+  else root.removeAttribute("data-motion");
+}
 
 /** Применяет плотность стекла к CSS-переменной (диапазон зависит от темы) */
 export function applyGlassIntensity(value: number, isDark: boolean) {

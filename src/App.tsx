@@ -5,7 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useAppStore, persistEntriesDebounced, isTauri } from "@/stores/app";
 import { useVaultStore } from "@/stores/vault";
-import { useSettingsStore, applyGlassIntensity } from "@/stores/settings";
+import { useSettingsStore, applyGlassIntensity, applyAccessibility } from "@/stores/settings";
 import { useI18n } from "@/i18n";
 import { TitleBar } from "@/components/TitleBar";
 import { LockScreen } from "@/screens/LockScreen";
@@ -43,17 +43,23 @@ function App() {
   useEffect(() => {
     if (!isTauri || !backupEnabled) return;
 
-    const doBackup = () => {
+    const doBackup = async () => {
       const { activeVault, isUnlocked } = useAppStore.getState();
       if (!activeVault || !isUnlocked) return;
 
-      invoke("vault_backup", {
-        request: {
-          vault_id: activeVault,
-          backup_path: backupPath,
-          keep_count: backupKeepCount,
-        },
-      }).catch((e) => console.error("Auto-backup failed:", e));
+      try {
+        await invoke("vault_backup", {
+          request: {
+            vault_id: activeVault,
+            backup_path: backupPath,
+            keep_count: backupKeepCount,
+          },
+        });
+        useSettingsStore.getState().setLastBackup(Date.now(), true);
+      } catch (e) {
+        console.error("Auto-backup failed:", e);
+        useSettingsStore.getState().setLastBackup(Date.now(), false);
+      }
     };
 
     // Первый бэкап через минуту, потом по расписанию
@@ -118,6 +124,14 @@ function App() {
       console.error("set_app_language failed:", e)
     );
   }, [lang]);
+
+  // A11y: масштаб шрифта / контрастность / reduced-motion применяются глобально
+  const uiScale = useSettingsStore((s) => s.uiScale);
+  const highContrast = useSettingsStore((s) => s.highContrast);
+  const reduceMotion = useSettingsStore((s) => s.reduceMotion);
+  useEffect(() => {
+    applyAccessibility(uiScale, highContrast, reduceMotion);
+  }, [uiScale, highContrast, reduceMotion]);
 
   return (
     <div className="app-shell h-screen flex flex-col overflow-hidden">

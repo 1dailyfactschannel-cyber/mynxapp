@@ -10,7 +10,13 @@ export type ImportFormat =
   | "bitwarden-json"
   | "bitwarden-csv"
   | "onepassword-csv"
+  | "onepassword-json"
   | "keepass-csv"
+  | "keepassxc-json"
+  | "lastpass-csv"
+  | "dashlane-csv"
+  | "protonpass-csv"
+  | "firefox-csv"
   | "chrome-csv";
 
 /** Черновик записи до превращения в Entry (id/strength добавляет импортёр) */
@@ -165,9 +171,25 @@ export function extractTotpSecret(raw: string | undefined): string | undefined {
 
 export function detectFormat(text: string): Exclude<ImportFormat, "auto"> {
   const t = text.replace(/^﻿/, "").trimStart();
-  if (t.startsWith("{")) return "bitwarden-json";
+  if (t.startsWith("{")) {
+    try {
+      const data = JSON.parse(t) as Record<string, unknown>;
+      if (Array.isArray(data.items)) return "bitwarden-json";
+      if (Array.isArray(data.entries) || (data.database && typeof data.database === "object")) {
+        return "keepassxc-json";
+      }
+      if (Array.isArray(data)) return "onepassword-json";
+    } catch {
+      /* битый JSON — дальше по заголовкам не имеет смысла */
+      return "bitwarden-json";
+    }
+    return "bitwarden-json";
+  }
   const header = (t.split(/\r\n|\r|\n/, 1)[0] || "").toLowerCase();
   if (header.includes("login_uri") || header.includes("reprompt")) return "bitwarden-csv";
+  if (header.includes("timecreated") || header.includes("httprealm")) return "firefox-csv";
+  if (header.includes("grouping")) return "lastpass-csv";
+  if (header.includes("otpurl") || header.includes("username2")) return "dashlane-csv";
   if (header.includes("otpauth")) return "onepassword-csv";
   if (header.startsWith("group") || header.includes("totp")) return "keepass-csv";
   return "chrome-csv";
@@ -347,6 +369,175 @@ function parseChromeCsv(text: string): ImportResult {
 }
 
 /* ------------------------------------------------------------------ */
+/* Дополнительные форматы (KeePassXC JSON, 1P JSON, LastPass,          */
+/* Dashlane, Proton Pass, Firefox)                                     */
+/* ------------------------------------------------------------------ */
+
+interface KpxEntry {
+  title?: string;
+  username?: string;
+  password?: string;
+  url?: string;
+  notes?: string;
+  totp?: string;
+  group?: string;
+  attributes?: Record<string, string> | null;
+}
+
+function parseKeePassXcJson(text: string): ImportResult {
+  const data = JSON.parse(text) as {
+    entries?: KpxEntry[];
+    database?: { entries?: KpxEntry[] };
+  };
+  const raw = data.entries ?? data.database?.entries ?? [];
+  const drafts: ImportDraft[] = raw.map((e) => ({
+    title: e.title || "",
+    username: e.username || "",
+    password: e.password || "",
+    url: e.url || "",
+    // Группа вида "Root/Email" — как в CSV-варианте
+    category: (e.group || "").replace(/^Root\/?/i, ""),
+    favorite: false,
+    notes: e.notes || undefined,
+    totpSecret: extractTotpSecret(e.totp ?? undefined),
+  }));
+  return finalize(drafts, 0);
+}
+
+interface OpField {
+  value?: unknown;
+  purpose?: string;
+  label?: string;
+  id?: string;
+}
+
+interface OpItem {
+  title?: string;
+  category?: string;
+  favorite?: boolean;
+  notes?: string;
+  trashed?: boolean;
+  urls?: { href?: string }[] | null;
+  fields?: OpField[] | null;
+  login?: { username?: string; password?: string; totp?: string };
+}
+
+function opFieldValue(item: OpItem, names: string[]): string {
+  for (const f of item.fields ?? []) {
+    const match =
+      (f.purpose && names.includes(f.purpose)) ||
+      (f.label && names.includes(f.label.toLowerCase())) ||
+      (f.id && names.includes(f.id.toLowerCase()));
+    if (match && f.value !== undefined && f.value !== null) {
+      return String(f.value);
+    }
+  }
+  return "";
+}
+
+function parseOnePasswordJson(text: string): ImportResult {
+  const data = JSON.parse(text) as OpItem[] | { items?: OpItem[] };
+  const items = Array.isArray(data) ? data : (data.items ?? []);
+  const drafts: ImportDraft[] = [];
+  let skipped = 0;
+  for (const item of items) {
+    if (item.trashed) {
+      skipped++;
+      continue;
+    }
+    // Логины: category "LOGIN" (v8) или наличие password-поля
+    const isLogin =
+      (item.category && item.category.toUpperCase().includes("LOGIN")) ||
+      opFieldValue(item, ["password"]) !== "";
+    if (!isLogin) {
+      skipped++;
+      continue;
+    }
+    const username = item.login?.username || opFieldValue(item, ["username", "email"]);
+    const password = item.login?.password || opFieldValue(item, ["password"]);
+    const totp = item.login?.totp || opFieldValue(item, ["totp"]);
+    drafts.push({
+      title: item.title || "",
+      username,
+      password,
+      url: item.urls?.find((u) => u.href)?.href || "",
+      category: "",
+      favorite: !!item.favorite,
+      notes: item.notes || undefined,
+      totpSecret: extractTotpSecret(totp || undefined),
+    });
+  }
+  return finalize(drafts, skipped);
+}
+
+function parseLastPassCsv(text: string): ImportResult {
+  const objs = rowsToObjects(parseCsv(text));
+  const drafts = objs.map((o) => ({
+    title: get(o, "name"),
+    username: get(o, "username"),
+    password: get(o, "password"),
+    url: get(o, "url"),
+    // grouping вида "Work/Dev" — корневой префикс не убираем, это папка
+    category: get(o, "grouping"),
+    favorite: get(o, "fav") === "1" || get(o, "fav").toLowerCase() === "true",
+    notes: get(o, "extra") || undefined,
+  }));
+  return finalize(drafts, 0);
+}
+
+function parseDashlaneCsv(text: string): ImportResult {
+  const objs = rowsToObjects(parseCsv(text));
+  const drafts = objs.map((o) => ({
+    title: get(o, "title"),
+    username: get(o, "username", "username2"),
+    password: get(o, "password"),
+    url: get(o, "url"),
+    category: get(o, "category"),
+    favorite: false,
+    notes: get(o, "note", "notes") || undefined,
+    totpSecret: extractTotpSecret(get(o, "otpurl", "otpauth") || undefined),
+  }));
+  return finalize(drafts, 0);
+}
+
+function parseProtonPassCsv(text: string): ImportResult {
+  const objs = rowsToObjects(parseCsv(text));
+  const drafts = objs.map((o) => ({
+    title: get(o, "name", "title"),
+    username: get(o, "username"),
+    password: get(o, "password"),
+    url: get(o, "url"),
+    category: get(o, "folder"),
+    favorite: false,
+    notes: get(o, "note", "notes") || undefined,
+    totpSecret: extractTotpSecret(get(o, "totp", "totpuri") || undefined),
+  }));
+  return finalize(drafts, 0);
+}
+
+function parseFirefoxCsv(text: string): ImportResult {
+  const objs = rowsToObjects(parseCsv(text));
+  const drafts = objs.map((o) => ({
+    title: hostOf(get(o, "url")) || "Firefox login",
+    username: get(o, "username"),
+    password: get(o, "password"),
+    url: get(o, "url"),
+    category: "",
+    favorite: false,
+  }));
+  return finalize(drafts, 0);
+}
+
+/** Домен из URL для заголовка Firefox-логина */
+function hostOf(url: string): string {
+  const s = url.trim();
+  if (!s) return "";
+  const noScheme = s.includes("://") ? s.slice(s.indexOf("://") + 3) : s;
+  const host = noScheme.split(/[/?#]/)[0] || "";
+  return host.split("@").pop()?.split(":")[0] || "";
+}
+
+/* ------------------------------------------------------------------ */
 /* Точка входа                                                         */
 /* ------------------------------------------------------------------ */
 
@@ -359,8 +550,20 @@ export function parseImport(format: ImportFormat, text: string): ImportResult {
       return parseBitwardenCsv(text);
     case "onepassword-csv":
       return parseOnePasswordCsv(text);
+    case "onepassword-json":
+      return parseOnePasswordJson(text);
     case "keepass-csv":
       return parseKeePassCsv(text);
+    case "keepassxc-json":
+      return parseKeePassXcJson(text);
+    case "lastpass-csv":
+      return parseLastPassCsv(text);
+    case "dashlane-csv":
+      return parseDashlaneCsv(text);
+    case "protonpass-csv":
+      return parseProtonPassCsv(text);
+    case "firefox-csv":
+      return parseFirefoxCsv(text);
     case "chrome-csv":
       return parseChromeCsv(text);
   }

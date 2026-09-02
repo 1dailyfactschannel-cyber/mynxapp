@@ -4,16 +4,26 @@ import { motion } from "framer-motion";
 import { GlassCard } from "@/components/GlassCard";
 import { useI18n } from "@/i18n";
 import type { Entry } from "@/stores/vault";
+import { ENTRY_MIME } from "@/lib/dnd";
 
 interface EntryCardProps {
   entry: Entry;
+  /** Задержка появления (микро-анимация списка) */
+  appearDelay?: number;
   onSelect: (id: string) => void;
   onCopyPassword: (password: string) => void;
   onToggleFavorite: (id: string) => void;
 }
 
-export function EntryCard({ entry, onSelect, onCopyPassword, onToggleFavorite }: EntryCardProps) {
+export function EntryCard({
+  entry,
+  appearDelay = 0,
+  onSelect,
+  onCopyPassword,
+  onToggleFavorite,
+}: EntryCardProps) {
   const [showPassword, setShowPassword] = useState(false);
+  const [dragging, setDragging] = useState(false);
   const { t } = useI18n();
 
   const strengthBgClass =
@@ -31,14 +41,49 @@ export function EntryCard({ entry, onSelect, onCopyPassword, onToggleFavorite }:
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -10 }}
+      transition={{ delay: appearDelay, exit: { duration: 0.2, delay: 0 } }}
       whileHover={{ x: 4 }}
       className="cursor-pointer"
+      style={dragging ? { opacity: 0.45 } : undefined}
       onClick={() => onSelect(entry.id)}
+      draggable
+      onDragStart={(e) => {
+        // Запись едет в сайдбар: бросок в категорию перекладывает её туда.
+        // framer-motion переопределяет тип onDragStart — приводим к HTML5 DragEvent
+        const de = e as unknown as React.DragEvent;
+        de.dataTransfer.setData(ENTRY_MIME, entry.id);
+        de.dataTransfer.effectAllowed = "move";
+        setDragging(true);
+      }}
+      onDragEnd={() => setDragging(false)}
+      title={t("dndEntryHint")}
+      // A11y: карточка — фокусируемая кнопка; контейнер листа ведёт стрелками
+      data-entry-id={entry.id}
+      tabIndex={0}
+      role="button"
+      aria-label={`${entry.title}${entry.username ? `, ${entry.username}` : ""}`}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          onSelect(entry.id);
+        }
+      }}
     >
-      <GlassCard hover className="p-4 group">
+      <GlassCard hover className="entry-card p-4 group">
         <div className="flex items-center gap-4">
           <div className="icon-tile w-10 h-10 rounded-xl flex items-center justify-center text-lg">
-            {entry.icon || "🔐"}
+            {entry.favicon ? (
+              <img
+                src={entry.favicon}
+                alt=""
+                width={24}
+                height={24}
+                className="w-6 h-6 rounded object-contain"
+                draggable={false}
+              />
+            ) : (
+              entry.icon || "🔐"
+            )}
           </div>
 
           <div className="flex-1 min-w-0">
