@@ -20,7 +20,7 @@
                           └── Mynx Desktop (Rust core)
 
 Mynx Desktop
-  ├── WebView (React UI) ⇄ Tauri commands (Rust, ~40 команд)
+  ├── WebView (React UI) ⇄ Tauri commands (Rust, 40 команд + greet)
   ├── HTTP API 127.0.0.1:5149 (axum, Bearer token, только loopback)
   └── Vault-файлы .safepass (папка vaults/ рядом с исполняемым файлом)
 ```
@@ -41,7 +41,7 @@ Mynx Desktop
 | framer-motion | 11 | Анимации интерфейса |
 | lucide-react | 0.408 | Иконки |
 | next-themes | 0.3 | Переключение темы (light/dark/system) |
-| zustand | 4.5 | Стейт-менеджмент; `persist` в localStorage для настроек/категорий/вложений |
+| zustand | 4.5 | Стейт-менеджмент; `persist` в localStorage для настроек/категорий/вложений (вложения — через шифрованный снапшот, см. `secureStorage.ts`) |
 | qrcode | 1.5 | QR-код Emergency Kit (canvas → dataURL) |
 | jspdf | 4.2 | Задекларирован, в коде не используется (зарезервирован) |
 | @tauri-apps/api | 2.0 (devDeps) | Вызов Rust-команд из JS (`invoke`) |
@@ -51,7 +51,9 @@ Mynx Desktop
 
 Ключевые решения:
 
-- **State**: шесть zustand-сторов — `app.ts` (экран, активный vault, unlock, персист записей), `vault.ts` (записи, генератор паролей, `calculateStrength`), `settings.ts`, `categories.ts`, `attachments.ts` (вложения и папки, base64), `clipboard.ts` (централизованный буфер обмена). Persist-ключи: `mynx-settings`, `mynx-categories`, `mynx-attachments`; язык — `mynx-lang`.
+- **State**: шесть zustand-сторов — `app.ts` (экран, активный vault, unlock, персист записей), `vault.ts` (записи, генератор паролей, `calculateStrength`), `settings.ts`, `categories.ts`, `attachments.ts` (вложения и папки, base64), `clipboard.ts` (централизованный буфер обмена). Persist-ключи: `mynx-settings`, `mynx-categories`, `mynx-attachments` (шифрованный), язык — `mynx-lang`.
+- **Шифрование локального стора** (`src/lib/secureStorage.ts`): снапшот zustand-персиста вложений шифруется AES-256-GCM (WebCrypto), ключ — неэкспортируемый `CryptoKey` в IndexedDB; формат в localStorage — `{"mynx-enc-v1":true,"iv","ct"}`; миграция с plaintext при первом чтении; потеря ключа (очищенная IndexedDB) — снапшот пересоздаётся.
+- **Внешние ссылки** (`src/lib/utils.ts::safeExternalUrl`): открытие записи допускает только http/https; домены без схемы поднимаются до https, `javascript:`/`data:` и прочие схемы → null (кнопка скрыта). Покрыто vitest-тестами.
 - **Модель записи** (`vault.ts`, JSON): `id, title, username, password, url, category, tags[], favorite, strength, icon?, totpSecret?, createdAt?, updatedAt?, notes?, customFields?, passwordHistory?, deletedAt?` (корзина — записи с `deletedAt`).
 - **i18n**: собственный контекст-провайдер `src/i18n.tsx`, словари en/ru в одном файле, автоопределение языка по `navigator.language` при первом запуске.
 - **TOTP**: собственная реализация `src/lib/totp.ts` — Base32 (RFC 4648), SHA-1 (RFC 3174) и HOTP/TOTP (RFC 4226/6238) без внешних зависимостей.
@@ -84,20 +86,21 @@ Mynx Desktop
 Модули Rust (`src-tauri/src/`):
 
 - `main.rs` — точка входа: `memprotect::init()` до всего остального, регистрация плагинов и команд, трей-меню (Show/Quit), закрытие окна в трей с опциональной блокировкой vault (`lock_on_hide`, по умолчанию включена), запуск API- и IPC-серверов в `tauri::async_runtime`, затирание секретов при выходе.
-- `commands/mod.rs` — Tauri-команды (см. таблицу ниже). Состояние — `AppState`/`AppStateInner` (сессия vault, API-токен, device key, ключи pairing IPC, защищённый буфер, счётчики rate-limit) за `Mutex`.
-- `api.rs` — HTTP API для внешних клиентов: `GET /api/status`, `POST /api/credentials` (Bearer-токен, выдаётся через `get_api_token`). Только loopback + middleware-гвард `host_origin_guard`: Host обязателен loopback, Origin — только `chrome-extension://` / `moz-extension://` / `safari-web-extension://` (защита от DNS-rebinding и кросс-сайтовых запросов).
+- `commands/mod.rs` — Tauri-команды (см. таблицу ниже). Состояние — `AppState`/`AppStateInner` (сессия vault, API-токен, device key, ключи pairing IPC, защищённый буфер, счётчики rate-limit, `last_activity`/`autolock_minutes`) за `Mutex`. `enforce_autolock()` вызывается на каждом секрет-команде: при простое дольше лимита сессия затирается, возвращается `vault_locked` (бэкенд-дубль фронтенд-таймера — обход фронтенда/сон системы секреты не сохраняют).
+- `api.rs` — HTTP API для внешних клиентов: `GET /api/status`, `POST /api/credentials` (Bearer-токен, выдаётся через `get_api_token`). Только loopback + middleware-гвард `host_origin_guard`: Host обязателен loopback, Origin — только `chrome-extension://` / `moz-extension://` / `safari-web-extension://` (защита от DNS-rebinding и кросс-сайтовых запросов). API-токен — `Mutex<Zeroizing<String>>` (затирание при ротации/drop); команда `rotate_api_token`. Перед выдачей секретов — `enforce_autolock()`; здесь же единый `domain_score` (eTLD+1-скоринг для IPC и HTTP).
 - `ratelimit.rs` — общий in-memory backoff-трекер: неудачные попытки подбора API-токена, мастер-пароля и подтверждений Windows Hello делят один счётчик на vault (`429 too_many_attempts` с задержкой).
-- `ipc.rs` — локальный IPC-сервер расширения: Windows — named pipe `\\.\pipe\mynx` (tokio, message mode, DACL только для текущего пользователя), Linux — unix-сокет `$XDG_RUNTIME_DIR/mynx-<uid>.sock`. Протокол: 4 байта LE length + JSON. Действия (`action`): `get` / `list` / `search` / `save` / `status` / `pair`. `status` открыт всем (индикатор Offline/Locked), всё остальное требует ключ доверенного клиента, выданного через `pair` после подтверждения пользователем в диалоге. Поиск записи по домену со скорингом (точное совпадение 1000 / поддомен 500 / contains 100 / обратный contains 50).
+- `ipc.rs` — локальный IPC-сервер расширения: Windows — named pipe `\\.\pipe\mynx` (tokio, message mode, DACL только для текущего пользователя, создание с `FILE_FLAG_FIRST_PIPE_INSTANCE` — squatting-перехват имени pipe исключён), Linux — unix-сокет `$XDG_RUNTIME_DIR/mynx-<uid>.sock`. Протокол: 4 байта LE length + JSON. Действия (`action`): `get` / `list` / `search` / `save` / `status` / `pair`. `status` открыт всем (индикатор Offline/Locked), всё остальное требует ключ доверенного клиента, выданного через `pair` после подтверждения пользователем в диалоге. Поиск записи по домену — eTLD+1-скоринг: точный хост 1000 / тот же регистрируемый домен 500 / остальное 0 (двусторонние `contains` убраны — lookalike-домены пароль не получают).
 - `native_host.rs` — отдельный бинарник `mynx-native-host`: мост Native Messaging (stdio) → pipe/unix-сокет.
 - `auto_type.rs` — авто-ввод логина/пароля через Win32 `SendInput` (`KEYEVENTF_UNICODE`), ожидание отпускания модификаторов, Tab/Enter между полями. `auto_type_fallback.rs` — заглушка для не-Windows: команды возвращают ошибку `auto_type_not_supported_on_this_platform`.
 - `clipboard.rs` — серверная часть буфера: `clipboard_set_secure` (запись + отложенная очистка по таймеру; очистка только если в буфере всё ещё наш текст, supersede через счётчик поколений), `clipboard_history_set_enabled` (отключение системной истории Win+V), очистка при блокировке/выходе.
 - `hotkey.rs` — «tray-хоткей» (глобальная клавиша показать окно): хранится в реестре/`settings.json`, команды `tray_hotkey_get/set/pause`, регистрация при старте.
-- `biometry.rs` — Windows Hello: после успешного пароль-unlock ключ сессии шифруется и сохраняется в Windows Credential Manager (`keyring`, сервис `mynx`, запись `vault/<vault_id>`); разблокировка — `UserConsentVerifier` (лицо/отпечаток/PIN), мастер-пароль не хранится. Провал верификации питает общий rate-limit. `biometry_fallback.rs` — заглушка на остальных платформах.
+- `biometry.rs` — Windows Hello: после успешного пароль-unlock ключ сессии шифруется AES-256-GCM обёрткой из детерминированной подписи KeyCredential (`RequestSignAsync` всегда показывает Hello-промпт) и сохраняется в Windows Credential Manager (`keyring`, сервис `mynx`, запись `vault/<vault_id>`) как passport-blob `mynx-passport-v1:*` (AAD `mynx:v2:passport-wrap`); вычитка Credential Manager напрямую/другим процессом даёт бесполезный блоб. Разблокировка — `UserConsentVerifier` (лицо/отпечаток/PIN), мастер-пароль не хранится. Провал верификации питает общий rate-limit. Legacy-записи (открытый hex) читаются и мигрируются при перезаписи. `biometry_fallback.rs` — заглушка на остальных платформах.
 - `memprotect.rs` — защита памяти процесса (Windows): запрет crash-дампов (`SetErrorMode`, unhandled-exception-фильтр с мгновенным `TerminateProcess` — WER не успевает снять дамп), получение `SeLockMemoryPrivilege`, вытеснение рабочего набора (`SetProcessWorkingSetSize`) после очистки секретов.
-- `crypto/` — `kdf.rs` (Argon2id), `hkdf.rs` (в т.ч. вариант с примесью секрета аппаратного ключа), `aead.rs` (AES-256-GCM через `ring`), `xchacha20.rs` (XChaCha20-Poly1305 через `chacha20poly1305`).
-- `vault/` — `types.rs` (заголовок с decoy-слотом и hw-key, magic `SAFEPASS`, export-формат `SAFEPASS-EXP`, `VaultSession` с `Drop`→`zeroize`), `operations.rs` (load/save, атомарная запись через `safepass.tmp`, двухслойное шифрование, decoy-слой, смена пароля, экспорт).
+- `logging.rs` — уровневое логирование INFO/WARN/ERROR: файл `<app_data_dir>/logs/mynx.log`, ротация при 5 МБ → `mynx.old.log`; WARN/ERROR дублируются в stderr; секреты в логи не пишутся (все вызовы `eprintln!` переведены).
+- `crypto/` — `kdf.rs` (Argon2id; параметры из файла валидируются — `to_argon2_params() -> Result<Params>`, паника на подделке исключена), `hkdf.rs` (в т.ч. вариант с примесью секрета аппаратного ключа), `aead.rs` (AES-256-GCM через `ring`, `encrypt_with_aad`/`decrypt_with_aad`), `xchacha20.rs` (XChaCha20-Poly1305 через `chacha20poly1305`, AAD-варианты).
+- `vault/` — `types.rs` (заголовок с decoy-слотом и hw-key, magic `SAFEPASS`, export-формат `SAFEPASS-EXP`, `VaultSession` с `Drop`→`zeroize`), `operations.rs` (load/save; все записи сериализованы `VAULT_WRITE_LOCK` — гонка параллельных сохранений устранена; запись: tmp → `sync_all()` → копия предыдущей версии в `*.safepass.bak` → rename; AAD v2-привязка ролей `mynx:v2:header/payload/decoy-header/export/hw-keyfile` с legacy-fallback; двухслойное шифрование, decoy-слой, смена пароля, экспорт).
 
-Зарегистрированные Tauri-команды (38 + `greet`):
+Зарегистрированные Tauri-команды (40 + `greet`):
 
 | Группа | Команды |
 |--------|---------|
@@ -107,7 +110,7 @@ Mynx Desktop
 | Auto-Type | `auto_type_credentials`, `auto_type_text`, `get_foreground_window` |
 | Хоткеи | `tray_hotkey_get`, `tray_hotkey_pause`, `tray_hotkey_set` |
 | Биометрия | `biometry_is_available`, `biometry_is_enabled`, `biometry_enable`, `biometry_disable`, `vault_unlock_biometry` |
-| Служебные | `save_png_file`, `get_api_token`, `get_device_key`, `set_lock_on_hide`, `set_app_language` |
+| Служебные | `save_png_file`, `get_api_token`, `rotate_api_token`, `get_device_key`, `set_lock_on_hide`, `set_autolock_minutes`, `set_app_language` |
 
 ### 2.3 Конфигурация окна и безопасности (`tauri.conf.json`)
 
@@ -126,6 +129,7 @@ Mynx Desktop
 | Внешний слой шифрования (заголовок) | `chacha20poly1305` 0.10 — XChaCha20-Poly1305 |
 | Внутренний слой (payload записей) | `ring` 0.17 — AES-256-GCM |
 | Constant-time | `subtle` 2.6 (timing-safe compare) |
+| AAD-привязка | `mynx:v2:{header,payload,decoy-header,export,hw-keyfile,clipboard,passport-wrap}` — роль каждого шифроблока аутентифицируется (v2, legacy-чтение без AAD сохранено) |
 | CSPRNG | `getrandom` 0.2, `rand_core` 0.6, `ring::rand::SystemRandom` |
 | Обнуление памяти | `zeroize` 1.7 (derive + `Drop` для `VaultSession`), `VirtualLock` для ключевых буферов |
 | Device key | 16 байт, файл `*.safepass.dk` рядом с vault |
@@ -152,16 +156,17 @@ Mynx Desktop
 
 | Инструмент | Назначение |
 |------------|------------|
-| npm scripts | `dev` (vite), `build`, `tauri-dev`, `tauri-build`, `lint`, `format` |
+| npm scripts | `dev` (vite), `build`, `tauri-dev`, `tauri-build`, `lint`, `format`, `test` (vitest: 15 тестов — safeExternalUrl, шифрование вложений, паритет i18n) |
 | @tauri-apps/cli 2.0 | `npm run tauri-dev` / `tauri-build` |
 | ESLint 8 + eslint-plugin-react-hooks | Линт (`--max-warnings 0`) |
 | Prettier 3 | Форматирование `src/**/*.{ts,tsx,css,json}` |
 | PostCSS + autoprefixer | Обработка Tailwind |
-| `build-release.bat` | Release-сборка под Windows |
+| `build-release.bat` | Release-сборка под Windows (пути от `%~dp0`, без персональных PATH/vcvars-захардкоженных путей) |
 | `tools/gen_installer_assets.py` | Генерация NSIS-ассетов (header/sidebar bmp, иконки) |
-| `extension/pack.bat` | Упаковка расширения в ZIP для Chrome Web Store |
+| `extension/pack.bat` | Упаковка расширения в ZIP для Chrome Web Store (дублируется workflow `extension-pack.yml` по тегу `ext-v*`) |
 | `extension/store/` | Материалы витрины: описание, privacy policy, промо-графика, mock-скриншоты (`mock/build-harness.py`) |
 | Cargo | Два бинарника: `mynx` (приложение), `mynx-native-host` |
+| GitHub Actions | `security.yml` (push/PR/еженедельный cron: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo audit`, `npm audit` prod-блокирующий + dev-отчётный), `frontend-tests.yml` (tsc + vitest), `extension-pack.yml` (zip по тегу), `docs-build.yml` (pandoc: docs/*.md → tech-stack.docx, artifact); Dependabot: npm/cargo — weekly, actions — monthly |
 
 Пайплайн: `npm run build` → фронтенд в `dist/` → `cargo build --release` (Tauri забирает `dist` через `frontendDist`) → NSIS-инсталлятор.
 
@@ -172,18 +177,21 @@ Mynx Desktop
 | Vault-файлы | `vaults/*.safepass` рядом с исполняемым файлом (переносимые; `current_exe().parent()/vaults`) |
 | Device key | `<vault>.safepass.dk` рядом с vault |
 | Реестр аппаратных ключей | `vaults/hwkeys.json` (ID keyfile → salt) |
-| Ключ биометрии | Windows Credential Manager, сервис `mynx`, запись `vault/<vault_id>` (только при включённом Hello) |
-| Настройки UI / категории / вложения | localStorage (`mynx-settings`, `mynx-categories`, `mynx-attachments`, `mynx-lang`) |
+| Ключ биометрии | Windows Credential Manager, сервис `mynx`, запись `vault/<vault_id>` — passport-blob `mynx-passport-v1:*` (ключ сессии зашифрован обёрткой из подписи KeyCredential; только при включённом Hello) |
+| Настройки UI / категории | localStorage (`mynx-settings`, `mynx-categories`, `mynx-lang`) |
+| Вложения | localStorage `mynx-attachments` — шифрованный снапшот AES-256-GCM (`{"mynx-enc-v1":…}`, ключ — неэкспортируемый CryptoKey в IndexedDB) |
+| Резервная копия сейфа | `<vault>.safepass.bak` — предыдущая версия файла, обновляется при каждом сохранении (после fsync, до rename) |
 | Tray-хоткей | HKCU-реестр/`settings.json` (Rust-сторона) |
 | Ключ pairing расширения | В памяти Rust-процесса до перезапуска; в браузере — `chrome.storage.session` |
 | Защищённый буфер | Только в памяти процесса, AES-256-GCM-шифрованный, одноразовый |
-| Сессия (ключи) | Только в памяти Rust-процесса (`Mutex<Option<VaultSession>>`), auto-lock по таймауту (`src/hooks/useAutoLock.ts`) и при сворачивании в трей |
+| Логи приложения | `<app_data_dir>/logs/mynx.log` (INFO/WARN/ERROR, ротация 5 МБ → `mynx.old.log`) |
+| Сессия (ключи) | Только в памяти Rust-процесса (`Mutex<Option<VaultSession>>`), auto-lock по таймауту (фронтенд `src/hooks/useAutoLock.ts` + бэкенд-`enforce_autolock` на всех секрет-вызовах) и при сворачивании в трей |
 
 ## 7. Платформы, ограничения, тесты
 
 - **Windows — полная функциональность**: auto-type (`SendInput`), Windows Hello, защита памяти (`memprotect`), named pipe, NSIS-инсталлятор.
 - **Linux — базовый режим**: ядро (крипто, vault, UI) кроссплатформенно (`libc` для unix); IPC расширения работает через unix-сокет; **нет** auto-type (заглушка возвращает ошибку), биометрии и запрета дампов памяти. Сборка — `npm run tauri build` (таргет бандла в конфиге один — NSIS, т.е. «из коробки» пакуется только Windows; Linux — из исходников).
-- Тесты: unit-тесты в `src-tauri/src/crypto/` (`kdf.rs`, `hkdf.rs` и др.) и `vault/operations.rs` (`cargo test`); фронтенд-тестов нет.
+- Тесты: юнит-тесты ядра в `src-tauri/src/crypto/` (включая AAD-привязку и legacy-совместимость), `src-tauri/src/api.rs` (eTLD+1-скоринг) и `vault/operations.rs` (`cargo test`); фронтенд — vitest, 15 тестов (`npm test`: safeExternalUrl, шифрование вложений roundtrip/миграция/потеря-ключа, паритет i18n); всё гоняется в CI (`security.yml` + `frontend-tests.yml`). Windows-специфичные правки (named pipe, Hello/Passport) требуют smoke-теста на Windows 10/11.
 - `src/components/ui/` не существует — скаффолдинг shadcn удалён, примитивы Radix используются напрямую.
 
 ---
@@ -218,7 +226,7 @@ Mynx Desktop
 Дополнительно (по желанию, включается в настройках):
 
 - **Аппаратный ключ (флешка)** — файл-ключ на USB-носнике: без него ключ шифрования не выводится даже с правильным паролем. Секрет примешивается в HKDF, поэтому хранилище без флешки математически не открывается.
-- **Windows Hello** — биометрическая разблокировка: ключ сессии хранится в Windows Credential Manager и выдаётся только после успешной проверки лица/отпечатка/PIN. Сам мастер-пароль при этом нигде не записывается.
+- **Windows Hello** — биометрическая разблокировка: ключ сессии хранится в Credential Manager в зашифрованном виде (passport-blob: обёртка из подписи Microsoft Passport — без Hello-промпта обёртку не открыть). Сам мастер-пароль при этом нигде не записывается.
 
 Следствия:
 
@@ -261,8 +269,12 @@ Mynx Desktop
 | Пароль в буфере обмена | «Слепое копирование»: секрет шифруется и живёт только в памяти приложения, системный буфер не используется; вставка — глобальным хоткеем имитацией клавиатуры, буфер одноразовый. Опционально — обычный буфер с автоочисткой по таймеру и отключением истории Win+V |
 | Дамп памяти | Ключи затираются нулями после использования (zeroize), страницы памяти с ключами запрещены к выгрузке на диск (VirtualLock); Windows: запрет crash-дампов на уровне процесса, вытеснение рабочего набора при блокировке/выходе |
 | Подбор пароля | Единый ограничитель частоты: неудачные попытки пароля, API-токена и Windows Hello делят общий счётчик с растущей задержкой |
-| Подмена/повреждение файла | Аутентифицированное шифрование: любое изменение файла = ошибка расшифровки |
-| Сбой при сохранении | Атомарная запись: сначала временный файл, потом мгновенная подмена — хранилище не «побьётся» на половине записи |
+| Подмена/повреждение файла | Аутентифицированное шифрование + AAD-привязка ролей: любое изменение файла = ошибка расшифровки; перестановка блоков между сейфами/слоями (трансплантация) — тоже |
+| Сбой при сохранении | Запись в три шага: временный файл → fsync (переживает сбой питания) → атомарная подмена; предыдущая версия сохраняется в `.safepass.bak` — хранилище не «побьётся» на половине записи и всегда есть откат |
+| Поддельный/повреждённый заголовок KDF | Параметры Argon2id валидируются: приложение вернёт ошибку, а не аварийно завершится |
+| Фишинговые домены (lookalike) | Автозаполнение сопоставляет домены строго по регистрируемому домену (eTLD+1): `evil-paypal.com` и `paypal.com.evil.io` пароль не получают |
+| Перехват локального канала расширения | Канал создаётся с эксклюзивным флагом (первый экземпляр pipe) — чужой процесс не может занять имя `\\.\pipe\mynx` раньше приложения |
+| Оставленная разблокированной после сна системы | Автоблокировка продублирована в бэкенде: даже при обходе интерфейсного таймера любой запрос секретов после простоя вернёт «заблокировано» и сотрёт ключи из памяти |
 | Подглядывание | Пароли маскируются точками, показ — только по явному действию, авто-скрытие по таймауту из настроек |
 | Кейлоггеры при входе на сайты | Авто-ввод (auto-type) эмулирует клавиатуру на уровне ОС, минуя поля ввода пароля менеджера (Windows) |
 | Скрытый доступ программ к паролям | Расширение получает доступ только после явного подтверждения в диалоге приложения; ключ живёт до перезапуска Mynx |

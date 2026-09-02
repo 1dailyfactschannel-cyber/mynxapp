@@ -1,6 +1,6 @@
 # Mynx — Архитектура шифрования
 
-> Документ актуализирован по состоянию **Mynx 1.2.2** и соответствует коду (`src-tauri/src/crypto/`, `src-tauri/src/vault/`). Параметры сверены с `crypto/kdf.rs` и `crypto/hkdf.rs`; при изменении кода обновлять оба файла.
+> Документ актуализирован по состоянию **Mynx 1.2.2** (после закрытия security-аудита: AAD-привязка v2, fsync + `.bak`, бэкенд-автоблокировка, Hello-passport-обёртка) и соответствует коду (`src-tauri/src/crypto/`, `src-tauri/src/vault/`). Параметры сверены с `crypto/kdf.rs` и `crypto/hkdf.rs`; при изменении кода обновлять оба файла.
 
 ## 1. Обзор
 
@@ -37,7 +37,7 @@ Master Password (вводит пользователь)
 - 128 бит (16 байт), генерируется CSPRNG ОС при создании хранилища.
 - Хранится в **файле `<vault>.safepass.dk`** рядом с vault-файлом (переносимая схема, NOT OS Keychain).
 - Для расшифровки необходим одновременно с мастер-паролем: украденный vault-файл сам по себе бесполезен.
-- При включённом **Windows Hello** производный ключ сессии дополнительно сохраняется в Windows Credential Manager (`keyring`, сервис `mynx`, запись `vault/<vault_id>`) и выдаётся только после биометрической верификации `UserConsentVerifier`. Сам мастер-пароль при этом нигде не хранится.
+- При включённом **Windows Hello** ключ сессии сохраняется в Credential Manager (`keyring`, сервис `mynx`, запись `vault/<vault_id>`) **в зашифрованном виде** (passport-blob `mynx-passport-v1:*`): обёртка — AES-256-GCM на ключе из детерминированной подписи KeyCredential (`RequestSignAsync` всегда показывает Hello-промпт), AAD `mynx:v2:passport-wrap`. Вычитка записи другим процессом того же пользователя даёт бесполезный блоб без биометрии; разблокировка — `UserConsentVerifier` (лицо/отпечаток/PIN). Legacy-записи (открытый hex) читаются и мигрируются при первой перезаписи. Сам мастер-пароль нигде не хранится.
 
 ### 2.3 Salt
 - 128 бит (16 байт) случайный salt на каждое KDF-преобразование.
@@ -74,7 +74,7 @@ Iterations:   3
 Parallelism:  2
 Output length: 32 bytes
 ```
-Параметры сериализуются в заголовок vault (`KdfParamsSerializable`) — их можно ужесточить в будущем без ломки совместимости.
+Параметры сериализуются в заголовок vault (`KdfParamsSerializable`) — их можно ужесточить в будущем без ломки совместимости. Параметры, прочитанные из файла, валидируются: `to_argon2_params() -> Result<Params>` — поддельный/повреждённый заголовок возвращает ошибку вызывателю, а не роняет процесс (паники на пути расшифровки исключены).
 
 ---
 
@@ -104,7 +104,8 @@ Output length: 32 bytes
 - **Payload — JSON** (`Vec<Entry>`), не Protobuf и не SQLite: проще, компактнее кода, формат заморожен расширением `.safepass`.
 - **Decoy-слот присутствует всегда**: при создании vault создаётся «спящий» слот со случайным ключом. Снаружи включённый и выключенный ложный слой неотличимы — наличие deniability не выдаёт сам файл. `decoy_enabled` спрятан внутри зашифрованного заголовка.
 - **Экспорт**: отдельный формат `SAFEPASS-EXP` (`.spbackup`), ключ выводится только из мастер-пароля — перенос между машинами. Имя файла `mynx-backup-*`.
-- **Атомарная запись**: vault сериализуется во временный `safepass.tmp` и атомарно подменяет основной файл.
+- **Атомарная запись с сохранением предыдущей версии**: tmp → `sync_all()` (fsync — данные переживают сбой питания) → копия предыдущего файла в `<vault>.safepass.bak` → rename. Все записи сериализованы глобальным `VAULT_WRITE_LOCK` (устранена гонка «load → modify → save» при параллельных вызовах из UI, HTTP API и IPC — потеря данных при одновременной записи больше невозможна).
+- **AAD-привязка (v2)**: каждый AEAD-блок аутентифицируется с ролью в AAD — `mynx:v2:header`, `mynx:v2:payload`, `mynx:v2:decoy-header`, `mynx:v2:export`, `mynx:v2:hw-keyfile`, `mynx:v2:clipboard`, `mynx:v2:passport-wrap`. Трансплантация шифроблоков между сейфами/слоями/ролями делает расшифровку невозможной (AAA проверяется `ring`/`chacha20poly1305` на этапе decrypt). Совместимость: чтение пробует v2, затем legacy-блоки без AAD — старые сейфы открываются; после первого сохранения файл обновляется до v2.
 
 ### 3.1 Зачем двойное шифрование?
 - **Внешний слой** (XChaCha20-Poly1305): защищает заголовок, в котором лежит `payload_key`. Смена мастер-пароля перешифровывает только заголовок — мгновенно и без перестройки записей.
@@ -162,7 +163,12 @@ Output length: 32 bytes
 2. Сворачивание окна в трей — `lock_on_hide` (по умолчанию включено, отключается командой `set_lock_on_hide`).
 3. Вручную — глобальный хоткей `Ctrl+Shift+L` (переназначается).
 
-### 6.4 Clipboard Protection
+Таймаут **продублирован в бэкенде**: `last_activity`/`autolock_minutes` в `AppStateInner`, `enforce_autolock()` на каждом секрет-вызове (Tauri-команды, HTTP API, IPC) — при простое дольше лимита сессия затирается и возвращается `vault_locked`. Обход фронтенд-таймера (сон системы, заморозка вебвью) секреты не сохраняет. Синхронизация значения — команда `set_autolock_minutes`.
+
+### 6.4 Логирование
+`logging.rs`: уровни INFO/WARN/ERROR, файл `<app_data_dir>/logs/mynx.log`, ротация при 5 МБ → `mynx.old.log`; WARN/ERROR дублируются в stderr. Секреты и пароли в логи не пишутся.
+
+### 6.5 Clipboard Protection
 - **Основной режим (Tauri, Windows)** — «слепое копирование»: секрет шифруется AES-256-GCM и хранится только в памяти процесса (`secure_copy`); вставка — `secure_paste` прямым вводом через `SendInput`, минуя системный буфер. Буфер одноразовый: после вставки очищается.
 - **Fallback** — системный буфер: запись через `clipboard_set_secure` с таймером очистки (очистка только если буфер всё ещё содержит наш текст, supersede через счётчик поколений); опциональное отключение истории Win+V (`clipboard_history_set_enabled`); принудительная очистка при блокировке/выходе.
 
@@ -172,14 +178,15 @@ Output length: 32 bytes
 
 ### 7.1 HTTP API (`api.rs`, axum, 127.0.0.1:5149)
 - `GET /api/status` — `{ unlocked, version }`.
-- `POST /api/credentials` `{ domain }` → `{ username, password, totp }` — Bearer-токен (`get_api_token`), rate-limit неудачных попыток.
+- `POST /api/credentials` `{ domain }` → `{ username, password, totp }` — Bearer-токен (`get_api_token`), rate-limit неудачных попыток. Токен хранится как `Mutex<Zeroizing<String>>` (затирание при ротации/drop, команда `rotate_api_token`).
+- Перед выдачей секретов — `enforce_autolock()` (см. §6.3).
 - Middleware: Host — только loopback; Origin — только расширения (`chrome-extension://`, `moz-extension://`, `safari-web-extension://`). Защита от DNS-rebinding и обращений из веб-страниц.
 
 ### 7.2 IPC расширения (`ipc.rs`)
-- Windows: named pipe `\\.\pipe\mynx` (DACL — только текущий пользователь); Linux: unix-сокет `$XDG_RUNTIME_DIR/mynx-<uid>.sock`.
+- Windows: named pipe `\\.\pipe\mynx` (DACL — только текущий пользователь; создание с `FILE_FLAG_FIRST_PIPE_INSTANCE` — чужой процесс не может предварительно занять имя pipe и перехватить трафик, squatting исключён); Linux: unix-сокет `$XDG_RUNTIME_DIR/mynx-<uid>.sock`.
 - Действия: `get` / `list` / `search` / `save` / `status` / `pair`. Протокол кадра: 4 байта LE длины + JSON.
 - **Pairing**: `status` открыт всем (индикатор Offline/Locked); остальные действия требуют ключ, выданный после подтверждения пользователем в диалоге десктоп-приложения. Ключ живёт до перезапуска Mynx.
-- Поиск по домену со скорингом: точное 1000 / поддомен 500 / contains 100 / обратный contains 50.
+- Поиск по домену — строгий eTLD+1-скоринг (единый `domain_score` в `api.rs`): точный хост = 1000, тот же регистрируемый домен (поддомен/www) = 500, всё остальное = **0**. Двусторонние `contains`-совпадения убраны: lookalike-домены (`evil-paypal.com`, `paypal.com.evil.io`) пароль не получают. Учёт двухуровневых публичных суффиксов (`co.uk` и пр.).
 
 ---
 
@@ -192,7 +199,12 @@ Output length: 32 bytes
 | Memory dump | Низкая (Win) | Высокое | Запрет WER-дампов, VirtualLock, zeroize, trim working set |
 | Keylogger | Средняя | Высокое | Windows Hello (нет ввода пароля), auto-type мимо менеджера (Win) |
 | Clipboard history / сканеры | Высокая | Среднее | Слепое копирование (секрет не покидает процесс), одноразовый буфер, опц. автоочистка и отключение Win+V |
-| Backup tampering | Низкая | Высокое | AEAD: любая подмена = ошибка расшифровки; атомарная запись |
+| Backup tampering | Низкая | Высокое | AEAD + AAD v2: подмена и трансплантация блоков = ошибка расшифровки; fsync + атомарный rename с `.safepass.bak` |
+| Squatting `\\.\pipe\mynx` | Низкая | Высокое | `FILE_FLAG_FIRST_PIPE_INSTANCE` — создание pipe падает, если имя занято |
+| Lookalike-домены (фишинг) | Средняя | Высокое | eTLD+1-скоринг: чужой регистрируемый домен получает 0 — автозаполнение молчит |
+| Обход автоблокировки (сон/заморозка UI) | Средняя | Высокое | Бэкенд-`enforce_autolock` на всех секрет-вызовах — таймер нельзя обойти со стороны фронтенда |
+| Кража вложений из localStorage | Средняя | Среднее | Снапшот zustand-персиста шифруется AES-256-GCM; ключ — неэкспортируемый CryptoKey в IndexedDB |
+| Поддельный KDF-заголовок (DoS) | Низкая | Среднее | Параметры KDF валидируются, ошибка вместо паники |
 | Shoulder surfing | Высокая | Среднее | Маскирование паролей, авто-скрытие по таймауту, auto-lock |
 | Evil maid | Низкая | Высокое | MP нигде не хранится; опциональный hw-ключ (флешка) |
 | Скрытый доступ программ | Низкая | Высокое | Pairing-диалог для IPC-клиентов, ключ до перезапуска; host/origin guard + bearer + rate-limit для HTTP |
@@ -208,7 +220,7 @@ Output length: 32 bytes
 | AES-256-GCM | `ring` | 0.17 | Внутренний слой, BoringSSL-код |
 | HKDF-SHA256 | `hkdf` + `sha2` | 0.12 / 0.10 | RFC 5869 |
 | CSPRNG | `getrandom`, `rand_core`, `ring::rand` | 0.2 / 0.6 | OS CSPRNG |
-| Zeroize | `zeroize` | 1.7 | derive + Drop |
+| Zeroize | `zeroize` | 1.7 | derive + Drop; API-токен — `Zeroizing` |
 | Constant-time | `subtle` | 2.6 | timing-safe compare |
 | OS keystore | `keyring` | 3 | Windows Credential Manager (биометрия) |
 
