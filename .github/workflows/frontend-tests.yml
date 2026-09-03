@@ -1,0 +1,35 @@
+name: Frontend tests
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "src/**"
+      - "package.json"
+      - "package-lock.json"
+      - "vitest.config.ts"
+      - "tsconfig.json"
+      - ".github/workflows/frontend-tests.yml"
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: tsc + vitest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # Node 24: structuredClone умеет клонировать неэкспортируемый
+          # CryptoKey — иначе fake-indexeddb ломает roundtrip-тест
+          # secureStorage (в реальном вебвью проблемы нет, IDB хранит
+          # ключ нативно). Node 20 на runners deprecated.
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      # Type errors fail the build (strict mode, no unused locals).
+      - run: npx tsc --noEmit
+      # Unit tests: safeExternalUrl (P1-8), encrypted attachments storage
+      # (P1-7), i18n en/ru parity (P2-10).
+      - run: npm test

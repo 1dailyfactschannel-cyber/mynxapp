@@ -1,0 +1,34 @@
+name: Docs build
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "docs/*.md"
+      - ".github/workflows/docs-build.yml"
+  pull_request:
+    paths:
+      - "docs/*.md"
+  workflow_dispatch:
+
+# P2-14: tech-stack.docx пересобирался вручную. Теперь pandoc-конвертация
+# автоматически проверяется/собирается при любом изменении docs/*.md.
+jobs:
+  docx:
+    name: tech-stack.docx via pandoc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: r-lib/actions/setup-pandoc@v2
+        with:
+          pandoc-version: "3.1.9"
+      - name: Convert markdown to docx
+        run: |
+          pandoc docs/tech-stack.md \
+            -f gfm -t docx \
+            --metadata lang=ru-RU \
+            -o docs/tech-stack.docx
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tech-stack-docx
+          path: docs/tech-stack.docx

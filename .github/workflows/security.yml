@@ -1,0 +1,80 @@
+name: Security
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  schedule:
+    # Weekly: catch advisories published against pinned deps.
+    - cron: "0 6 * * 1"
+
+jobs:
+  cargo-audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - uses: actions/checkout@v4
+      # audit-check looks for ./Cargo.lock in the repo root, but the Tauri
+      # workspace keeps it in src-tauri/ - copy it up before the scan.
+      - name: Expose src-tauri/Cargo.lock at repo root
+        run: cp src-tauri/Cargo.lock ./Cargo.lock
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  cargo-test:
+    name: cargo test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      # Unit tests cover the crypto and vault-format logic (kdf, aead, operations).
+      - run: cargo test
+        working-directory: src-tauri
+
+  clippy:
+    name: cargo clippy
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      # No continue-on-error: warnings must be fixed, not ignored.
+      - run: cargo clippy --all-targets -- -D warnings
+        working-directory: src-tauri
+
+  npm-audit:
+    name: npm audit (frontend deps)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      # Audits package-lock.json without installing node_modules.
+      - run: npm audit --omit=dev --audit-level=high
+
+  # Dev-dependency advisories are reported but do not block: dev deps
+  # (toolchain, bundler, linters) never ship inside the built app.
+  # Policy: review findings weekly; promote to blocking only if a dev-only
+  # tool runs untrusted input (build scripts are covered by npm ci + lockfile).
+  npm-audit-dev:
+    name: npm audit (dev deps, report only)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm audit --omit=prod --audit-level=high

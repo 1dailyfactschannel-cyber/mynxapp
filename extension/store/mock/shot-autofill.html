@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Mynx — inline autofill</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      background: #ffffff;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      overflow: hidden;
+    }
+
+    /* ---- fake Chrome window chrome ---- */
+    .browser-bar { background: #202124; height: 76px; }
+    .browser-tabs { display: flex; align-items: flex-end; height: 36px; padding: 4px 8px 0; gap: 4px; }
+    .browser-tab {
+      display: flex; align-items: center; gap: 8px;
+      background: #35363a; color: #e8eaed;
+      font-size: 12px; padding: 0 14px; height: 32px;
+      border-radius: 8px 8px 0 0; max-width: 220px;
+    }
+    .browser-tab .dot { width: 14px; height: 14px; border-radius: 50%; background: #24292f; flex: none;
+      display: inline-flex; align-items: center; justify-content: center; color: #fff; font-size: 9px; font-weight: 700; }
+    .browser-urlbar { display: flex; align-items: center; gap: 10px; padding: 4px 10px 6px; }
+    .browser-url {
+      flex: 1; background: #35363a; color: #e8eaed; border-radius: 999px;
+      font-size: 12.5px; padding: 6px 14px; display: flex; align-items: center; gap: 8px;
+    }
+    .browser-url .lock { color: #9aa0a6; font-size: 11px; }
+    .ext-puzzle {
+      width: 24px; height: 24px; border-radius: 6px; background: #35363a; color: #9aa0a6;
+      display: flex; align-items: center; justify-content: center; font-size: 13px; flex: none;
+    }
+    .ext-mynx {
+      width: 24px; height: 24px; border-radius: 6px; background: #10b981; color: #0a0a0f;
+      display: flex; align-items: center; justify-content: center; font-size: 13px; flex: none; font-weight: 700;
+    }
+
+    /* ---- fake GitHub sign-in page ---- */
+    .gh-page { background: #f6f8fa; height: calc(100% - 76px); position: relative; }
+    .gh-main { padding-top: 56px; display: flex; flex-direction: column; align-items: center; }
+    .gh-octo {
+      width: 48px; height: 48px; border-radius: 50%; background: #24292f; color: #fff;
+      display: flex; align-items: center; justify-content: center; font-size: 22px; font-weight: 700;
+      margin-bottom: 16px;
+    }
+    .gh-h1 { font-size: 24px; font-weight: 300; color: #24292f; letter-spacing: -0.5px; margin-bottom: 16px; }
+    .gh-card {
+      width: 340px; background: #ffffff; border: 1px solid #d8dee4; border-radius: 6px;
+      padding: 20px; font-size: 14px;
+    }
+    .gh-card label { display: block; font-size: 14px; color: #24292f; margin-bottom: 8px; }
+    .gh-card label .forgot { float: right; font-size: 12px; color: #0969da; }
+    .gh-card input {
+      width: 100%; padding: 7px 10px; margin-bottom: 16px;
+      border: 1px solid #d8dee4; border-radius: 6px; font-size: 14px; outline: none;
+      background: #ffffff;
+    }
+    .gh-card input:focus { border-color: #0969da; box-shadow: 0 0 0 3px rgba(9,105,218,0.25); }
+    .gh-card .gh-btn {
+      width: 100%; padding: 7px 0; border: none; border-radius: 6px;
+      background: #1f883d; color: #fff; font-size: 14px; font-weight: 600;
+    }
+    .gh-subcard {
+      width: 340px; margin-top: 16px; padding: 14px 20px; text-align: center;
+      border: 1px solid #d8dee4; border-radius: 6px; font-size: 13px; color: #24292f; background: #fff;
+    }
+    .gh-subcard a { color: #0969da; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <div class="browser-bar">
+    <div class="browser-tabs">
+      <div class="browser-tab"><span class="dot">G</span><span>Sign in to GitHub</span></div>
+    </div>
+    <div class="browser-urlbar">
+      <div class="browser-url"><span class="lock">🔒</span><span>github.com/login</span></div>
+      <div class="ext-mynx">🔐</div>
+      <div class="ext-puzzle">🧩</div>
+    </div>
+  </div>
+
+  <div class="gh-page">
+    <div class="gh-main">
+      <div class="gh-octo">G</div>
+      <div class="gh-h1">Sign in to GitHub</div>
+      <form class="gh-card" onsubmit="return false">
+        <label for="login">Username or email address</label>
+        <input id="login" name="username" type="text" autocomplete="username" />
+        <label for="password">Password <span class="forgot">Forgot password?</span></label>
+        <input id="password" name="password" type="password" autocomplete="current-password" />
+        <button class="gh-btn" type="submit">Sign in</button>
+      </form>
+      <div class="gh-subcard">New to GitHub? <a href="#">Create an account</a>.</div>
+    </div>
+  </div>
+
+  <script src="mock-chrome.js"></script>
+  <script src="../../content.js"></script>
+  <script>
+    // Open the Mynx account dropdown on the password field for the shot.
+    setTimeout(function () {
+      var icons = document.querySelectorAll('.mynx-inline-icon');
+      var target = null;
+      icons.forEach(function (ic) {
+        if (ic._mynxField && ic._mynxField.type === 'password') target = ic;
+      });
+      target = target || icons[0];
+      if (target) target.click();
+    }, 600);
+  </script>
+</body>
+</html>

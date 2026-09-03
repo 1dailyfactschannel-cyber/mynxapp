@@ -1,0 +1,28 @@
+node_modules/
+dist/
+src-tauri/target/
+
+# Build artifacts / releases
+release-linux/
+extension/*.zip
+tools/.venv/
+
+# Local user vault backups (personal data)
+src-tauri/backups/
+
+# Logs
+*.log
+
+# Updater signing keys: never commit (private key lives in ~/.tauri/)
+.tauri/
+*.key
+
+# Extension signing key (public half lives in manifest.json "key")
+extension/store/extension-key.pem
+extension/store/mock/.profile-*/
+
+# Внутренняя доска задач (переносится в GitHub Projects, P2-7)
+TODO.md
+
+# Sidecar staging area (real exe staged by release scripts, placeholder by build.rs)
+src-tauri/binaries/
