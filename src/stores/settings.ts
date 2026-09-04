@@ -1,6 +1,5 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { invoke } from "@tauri-apps/api/core";
 
 /** Плотность интерфейса списка записей */
 export type DensityMode = "compact" | "cozy" | "spacious";
@@ -193,30 +192,7 @@ export function applyGlassIntensity(value: number, isDark: boolean) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Синхронизация безопасных настроек в бэкенд                           */
+/* Backend-sync перенесён в src/lib/backendSync.ts (initBackendSync).
+   Раньше здесь была подписка на autolock/lockOnHide, но она дублировала
+   логику и не покрывала остальные 5 настроек. Сейчас всё в одном месте. */
 /* ------------------------------------------------------------------ */
-
-function pushAutolock(minutes: number) {
-  invoke("set_autolock_minutes", { minutes: Math.max(0, Math.round(minutes)) }).catch(() => {
-    /* нет бэкенда (тесты/статика) — молча игнорируем */
-  });
-}
-
-function pushLockOnHide(enabled: boolean) {
-  invoke("set_lock_on_hide", { enabled }).catch(() => {
-    /* нет бэкенда — молча игнорируем */
-  });
-}
-
-// Бэкенд держит свою копию таймаута автоблокировки (AppStateInner::
-// enforce_autolock) и сам гасит сессию по простою: фронтовый таймер
-// в вебвью обходится сном системы или подменой фронта.
-useSettingsStore.subscribe((state, prev) => {
-  if (state.autoLockMinutes !== prev.autoLockMinutes) pushAutolock(state.autoLockMinutes);
-  if (state.lockOnMinimize !== prev.lockOnMinimize) pushLockOnHide(state.lockOnMinimize);
-});
-
-// Стартовая синхронизация: сохранённые настройки могут отличаться
-// от дефолтов бэкенда после рестарта приложения.
-pushAutolock(useSettingsStore.getState().autoLockMinutes);
-pushLockOnHide(useSettingsStore.getState().lockOnMinimize);

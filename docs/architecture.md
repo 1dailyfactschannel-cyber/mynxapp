@@ -1,6 +1,14 @@
-# Mynx — Архитектура шифрования
+# Mynx — Архитектура шифрования и приложения
 
-> Документ актуализирован по состоянию **Mynx 1.2.2** (после закрытия security-аудита: AAD-привязка v2, fsync + `.bak`, бэкенд-автоблокировка, Hello-passport-обёртка) и соответствует коду (`src-tauri/src/crypto/`, `src-tauri/src/vault/`). Параметры сверены с `crypto/kdf.rs` и `crypto/hkdf.rs`; при изменении кода обновлять оба файла.
+> Документ актуализирован по состоянию **Mynx 1.3.1+** (после security-аудита v1.2.2 и архитектурного рефакторинга v1.3.1: typed errors, разбивка команд и UI-модулей, AAD v2, fsync + `.bak`, бэкенд-автоблокировка, Hello-passport-обёртка, AAD-привязка). Соответствует коду в `src-tauri/src/crypto/`, `src-tauri/src/vault/`, `src-tauri/src/commands/`, `src/stores/`. При изменении кода обновлять оба файла.
+
+## 0. Текущая кодовая база (v1.3.1+)
+
+| Слой | LoC | Файлов | Заметки |
+|---|---|---|---|
+| Rust (src-tauri) | ~3 700 | ~30 | Команды разнесены по доменам в `commands/{vault,decoy,hw_key,secure_clip,backup,settings_sync,api_token,save_dialog,misc}.rs`. |
+| Frontend (src) | ~5 800 | ~70 | Сторы разнесены: `session` / `vaultOps` / `decoy` / `hwKey` + фасад `useAppStore` для обратной совместимости. |
+| Тесты | 74 vitest + 63 cargo | 7 + 9 | Паритет i18n, typed errors, secureStorage, crypto-формат. |
 
 ## 1. Обзор
 
@@ -9,7 +17,7 @@ Mynx использует **Zero-Knowledge** архитектуру. Все да
 ```
 Master Password (вводит пользователь)
         ↓
-   [Argon2id]  salt из заголовка vault, m=16 MB, t=3, p=2
+   [Argon2id]  salt из заголовка vault, m=64 MB, t=4, p=2
         ↓
    Primary Key (32 bytes)
         ↓
@@ -23,6 +31,9 @@ Master Password (вводит пользователь)
         ↓
    [AES-256-GCM]  → расшифровывает записи (JSON)
 ```
+
+> **Примечание:** параметры KDF подняты до **64 MB / 4 iter** в v1.3.1. Старые vault-файлы с 16 MB / 3 iter прозрачно мигрируют на новые параметры при первом unlock через `migrate_kdf_if_needed` (см. `src-tauri/src/vault/operations.rs`).
+
 
 ---
 
@@ -67,13 +78,15 @@ let enc_key = derive_encryption_key_hw(&primary_key, &device_key, hw_key, b"safe
 
 > **Почему `hwkeys.json` лежит открытым текстом (осознанное решение):** файл хранит только пары «имя → путь к keyfile» — ни секретов, ни содержимого ключей. Компрометация реестра не даёт доступа к хранилищам: злоумышленнику нужны ещё и сам keyfile, и мастер-пароль. Шифрование реестра возможно по запросу, но не меняет модель угроз.
 
-### 2.5 Argon2id Parameters (фактические, `crypto/kdf.rs`)
+### 2.5 Argon2id Parameters (фактические, `crypto/kdf.rs`, v1.3.1+)
 ```
-Memory:       16 MB (16384 KB)
-Iterations:   3
+Memory:       64 MB (65536 KB)
+Iterations:   4
 Parallelism:  2
 Output length: 32 bytes
 ```
+
+Подняты с 16 MB / 3 iter до 64 MB / 4 iter в v1.3.1. Старые vault-файлы открываются со старыми параметрами и прозрачно мигрируют на новые при первом успешном unlock через `migrate_kdf_if_needed` (см. `src-tauri/src/vault/operations.rs`). На обычном железе unlock укладывается в <1 секунды.
 Параметры сериализуются в заголовок vault (`KdfParamsSerializable`) — их можно ужесточить в будущем без ломки совместимости. Параметры, прочитанные из файла, валидируются: `to_argon2_params() -> Result<Params>` — поддельный/повреждённый заголовок возвращает ошибку вызывателю, а не роняет процесс (паники на пути расшифровки исключены).
 
 ---
@@ -224,9 +237,122 @@ Output length: 32 bytes
 | Constant-time | `subtle` | 2.6 | timing-safe compare |
 | OS keystore | `keyring` | 3 | Windows Credential Manager (биометрия) |
 
-## 10. Будущие улучшения
+## 9. Типизированные ошибки (v1.3.1+)
+
+Все Tauri-команды и IPC-ответы возвращают `CommandError` (`src-tauri/src/error.rs`) с сериализацией `{kind, message}`. На фронте `src/lib/errors.ts` парсит строку и предоставляет узкоспециализированные хелперы (`isWrongPassword`, `isHwKeyInvalid`, …).
+
+**Категории:**
+
+| Категория | Примеры |
+|---|---|
+| Аутентификация | `wrong_password`, `password_too_short`, `too_many_attempts`, `vault_locked` |
+| Vault | `vault_not_found`, `vault_corrupted`, `vault_write_failed` |
+| Decoy | `decoy_equals_master`, `decoy_session_forbidden` |
+| Hardware key | `hw_key_not_found`, `hw_key_invalid`, `hw_key_already_enabled`, `hw_key_dir_*` |
+| Clipboard | `secure_buffer_empty`, `clipboard_failed` |
+| Настройки | `lock_on_hide_weakening_forbidden`, `invalid_shortcut`, `hotkey_conflict` |
+| Системные | `io_error`, `serde_error`, `other` |
+
+Добавление новой ошибки = один вариант в `CommandError` (Rust) + один в `ErrorKind` (TS) + хелпер. Старый код (`String(e).includes("...")`) заменён типизированными проверками.
+
+## 10. Архитектура команд (v1.3.1+)
+
+`src-tauri/src/commands/` разнесён по доменам:
+
+```
+commands/
+  mod.rs          # AppState, wipe_secrets, re-exports
+  app_state.rs    # AppState/AppStateInner, IpcBackupPrefs
+  types.rs        # DTO + validate_master_password
+  device_key.rs   # session_keys, hw_registry helpers
+  vault.rs        # create/unlock/lock/save/change-pw/list/delete/export
+  decoy.rs        # set/remove/status
+  hw_key.rs       # enable/disable/status + path validation
+  secure_clip.rs  # secure_copy/paste/available
+  settings_sync.rs # autolock/lock_on_hide/language
+  api_token.rs    # get/rotate
+  backup.rs       # backup + ipc_prefs
+  save_dialog.rs  # native save dialog + save_png_file
+  misc.rs         # revoke_ipc_pair
+```
+
+`main.rs` импортирует все команды через `commands::*` (через re-exports). Новая Tauri-команда = новый файл + re-export + регистрация в `invoke_handler`.
+
+## 11. Сторы фронта (v1.3.1+)
+
+`src/stores/` разнесён по ответственности:
+
+```
+stores/
+  session.ts    # screen, isLocked, isUnlocked, activeVault, error, isLoading
+  vaultOps.ts   # unlock/lock/createVault/loadVaults/changeMasterPassword/...
+  decoy.ts      # isDecoySession, decoyEnabled, setDecoyPassword/removeDecoy
+  hwKey.ts      # hwKeyEnabled, enable/disable/status
+  vault.ts      # entries + CRUD (бизнес-данные)
+  app.ts        # ФАСАД: useAppStore для обратной совместимости
+  settings.ts   # persist, синхронизация в бэкенд через lib/backendSync.ts
+  attachments.ts # persist (encrypted)
+  passkeys.ts   # persist (encrypted)
+  categories.ts # persist
+  clipboard.ts  # transient (secure copy)
+```
+
+`useAppStore` — фасад, делегирующий в 4 новых стора. Старый код компонентов работает без правок; новый код предпочитает импортировать конкретный стор.
+
+`useSessionStore.getState()` читает состояние синхронно; подписки на изменения — `useSessionStore.subscribe()`.
+
+## 12. Backend sync (v1.3.1+)
+
+Вся коммуникация фронт↔бэкенд по настройкам инкапсулирована в `src/lib/backendSync.ts`:
+
+- `initBackendSync()` — идемпотентная подписка, вызывается из `App.tsx` один раз;
+- Подписки на `useSettingsStore` детектят изменения полей и шлют нужные команды (autolock, lock_on_hide, clipboard_history, ipc_backup_prefs);
+- Шедулер автобэкапа пересоздаёт таймеры при изменении любого из 4 полей;
+- Подписка на событие `vault-locked` от Rust синхронизирует UI-стор при сворачивании в трей.
+
+Раньше в `App.tsx` было 7 отдельных `useEffect`, каждый слушал одно поле и слал одну команду. Теперь — один вызов, 7 полей покрыты.
+
+## 13. i18n (v1.3.1+)
+
+Словари вынесены в отдельные файлы:
+
+- `src/i18n/en.ts` — английский словарь (~13 KB)
+- `src/i18n/ru.ts` — русский словарь (~19 KB)
+- `src/i18n.tsx` — Provider + `useI18n` хук + `entriesCountLabel` (плюрализация)
+
+Добавление нового языка = новый файл `src/i18n/<lang>.ts` + регистрация в `translations` (одна строка) + тип `Lang`.
+
+Паритет наборов ключей проверяется тестом `i18n.test.ts`.
+
+## 14. Modal stack & global shortcuts (v1.3.1+)
+
+`VaultScreen.tsx` использует:
+
+- `useModalStack<K>()` — стек модалок вместо 10 булевых useState; один активный модал, `Escape` закрывает верхний, конфликты видимости невозможны.
+- `useGlobalShortcuts(handlers)` — хук регистрации глобальных хоткеев через `tauri-plugin-global-shortcut`. Обработчик AutoType выделен в отдельный хук; picker показывается через custom event `mynx:auto-type-pick`.
+
+`Settings.tsx` (54 KB, 1125 строк, было 94 KB / 2471) использует:
+- `components/settings/ui/` — `ActionModal`, `PasswordField`, `FieldLabel`, `Toggle`
+- `components/settings/modals/` — `ExportModal`, `ImportModal`, `ChangePasswordModal`, `DeleteDataModal`, `DecoySetModal`, `DecoyRemoveModal`, `HwKeyEnableModal`, `HwKeyDisableModal`
+
+Каждая модалка в своём файле, использует типизированные хелперы ошибок, тестируется отдельно.
+
+## 15. ErrorBoundary (v1.3.1+)
+
+`src/components/ErrorBoundary.tsx` оборачивает `<App />` в `main.tsx`. При падении рендера:
+
+1. `vault_lock` шлётся в Rust (best-effort);
+2. `entries` чистятся из vault-стора;
+3. `isLocked = true`, `screen = "lock"` в session-сторе;
+4. UI показывает экран восстановления с кнопкой "Перезагрузить".
+
+`scope="panel"` вариант используется для локальных границ вокруг модалок (Settings, EntryDetail, Health).
+
+## 16. Будущие улучшения
 
 - **Post-quantum KEM** — ML-KEM (Kyber) для ключевого обмена (если появится sync).
 - **Hardware-backed device key** — перенос `.safepass.dk` в TPM / Secure Enclave (сейчас — файл рядом с vault; Credential Manager используется только для ключа Windows Hello).
 - **Per-entry key derivation** — каждая запись зашифрована своим ключом (двойной слой формата уже это допускает).
 - **Расширение Argon2-параметров** — поле `KdfParams` в заголовке позволяет ужесточить KDF без миграции формата.
+- **Расширение на TypeScript** — `extension/*.js` пока без TS, миграция под вопросом (Chrome Web Store ограничивает build-step).
+- **Crash reporting** — плагин Sentry/GlitchTip в Tauri 2, opt-in.

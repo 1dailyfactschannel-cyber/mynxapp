@@ -1,5 +1,16 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
+use std::path::PathBuf;
+
+/// SHA256 «правильного» mynx.exe. Если exe пересобран — обновите здесь
+/// и пересоберите mynx-native-host.exe. Получить:
+///   Get-FileHash "$env:LOCALAPPDATA\Mynx\mynx.exe" -Algorithm SHA256
+///
+/// Authenticode-подпись проверяется ОС при запуске (если сертификат
+/// доверенный). Эта проверка ловит подмену бинарника даже когда
+/// атакующий не смог получить доверенный сертификат.
+const EXPECTED_MYNX_SHA256: &str = "616c2d43c34c73813ecdf40d389d1384218192826addc076a13d90ee6a55844a";
 
 #[derive(Debug, Serialize, Deserialize)]
 struct NativeMessage {
@@ -44,6 +55,27 @@ struct IpcResponse {
 }
 
 fn main() {
+    // Проверяем целостность mynx.exe ДО обработки любых сообщений.
+    // Если exe подменён — нативный хост сразу завершается, расширение
+    // видит «host unavailable» и не отправляет пароли скомпрометированному
+    // процессу. Чтобы обойти эту защиту, атакующему придётся одновременно
+    // подменить и mynx.exe, и mynx-native-host.exe.
+    if let Err(e) = verify_desktop_integrity() {
+        eprintln!("mynx-native-host: integrity check failed: {e}");
+        // Возвращаем JSON-ошибку в stdout, чтобы расширение увидело
+        // осмысленный ответ вместо молчаливого разрыва pipe.
+        let resp = serde_json::json!({
+            "type": "error",
+            "message": format!("desktop_integrity_invalid: {e}"),
+        });
+        let bytes = serde_json::to_vec(&resp).unwrap();
+        let len = bytes.len() as u32;
+        let _ = std::io::stdout().write_all(&len.to_le_bytes());
+        let _ = std::io::stdout().write_all(&bytes);
+        let _ = std::io::stdout().flush();
+        std::process::exit(2);
+    }
+
     let mut stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
 
@@ -329,4 +361,51 @@ fn send_ipc(request: IpcRequest) -> Result<IpcResponse, Box<dyn std::error::Erro
         let response: IpcResponse = serde_json::from_slice(&buf)?;
         Ok(response)
     })
+}
+
+/// Проверить, что mynx.exe (рядом с native host) не подменён:
+/// вычисляем SHA256 и сверяем с захардкоженным значением.
+///
+/// Authenticode-подпись проверяется ОС при запуске (если сертификат
+/// доверенный). Эта проверка — второй уровень: даже если exe
+/// переподписан валидным (например, украденным) сертификатом, его
+/// хеш всё равно не совпадёт, и нативный хост откажется работать.
+fn verify_desktop_integrity() -> Result<(), String> {
+    // Sentinel: при первом запуске EXPECTED_MYNX_SHA256 равен нулям.
+    // Это означает, что проверка ещё не настроена — пропускаем, чтобы
+    // загрузка вообще стартовала. Продакшен-билд обязан заменить ноли
+    // на реальный хеш.
+    if EXPECTED_MYNX_SHA256.chars().all(|c| c == '0') {
+        eprintln!("mynx-native-host: integrity check DISABLED (hash not set)");
+        return Ok(());
+    }
+
+    let exe_path: PathBuf = std::env::current_exe()
+        .map_err(|e| format!("current_exe: {e}"))?
+        .parent()
+        .ok_or("no parent dir")?
+        .join("mynx.exe");
+
+    if !exe_path.exists() {
+        return Err(format!("mynx.exe not found at {}", exe_path.display()));
+    }
+
+    let bytes = std::fs::read(&exe_path)
+        .map_err(|e| format!("read {}: {e}", exe_path.display()))?;
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    let actual = hasher.finalize();
+    let actual_hex: String = actual
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect();
+
+    if !actual_hex.eq_ignore_ascii_case(EXPECTED_MYNX_SHA256) {
+        return Err(format!(
+            "hash mismatch: expected {}, got {}",
+            EXPECTED_MYNX_SHA256, actual_hex
+        ));
+    }
+
+    Ok(())
 }

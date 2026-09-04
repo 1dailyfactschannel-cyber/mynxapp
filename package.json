@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri-dev": "tauri dev",
-    "tauri-build": "tauri build",
+    "tauri-build": "cross-env MYNX_STRIP_CSP=1 tauri build",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "format": "prettier --write \"src/**/*.{ts,tsx,css,json}\"",
     "test": "vitest run",
@@ -42,6 +42,7 @@
     "zustand": "^4.5.4"
   },
   "devDependencies": {
+    "cross-env": "^7.0.3",
     "@tauri-apps/api": "^2.0.0",
     "@tauri-apps/cli": "^2.0.0",
     "@types/node": "^20.14.0",

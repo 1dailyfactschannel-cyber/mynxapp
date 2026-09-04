@@ -1,17 +1,16 @@
 import { motion } from "framer-motion";
 import { useEffect } from "react";
 import { useTheme } from "next-themes";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import { useAppStore, persistEntriesDebounced, isTauri } from "@/stores/app";
-import { useVaultStore } from "@/stores/vault";
-import { useSettingsStore, applyGlassIntensity, applyAccessibility } from "@/stores/settings";
+import { useAppStore, isTauri } from "@/stores/app";
+import { useSettingsStore, applyGlassIntensity } from "@/stores/settings";
 import { useI18n } from "@/i18n";
+import { initBackendSync, syncAppLanguage } from "@/lib/backendSync";
 import { TitleBar } from "@/components/TitleBar";
 import { LockScreen } from "@/screens/LockScreen";
 import { VaultScreen } from "@/screens/VaultScreen";
 import { Onboarding } from "@/screens/Onboarding";
 import { VaultSelector } from "@/components/VaultSelector";
+import { useVaultStore } from "@/stores/vault";
 
 function App() {
   const screen = useAppStore((s) => s.screen);
@@ -22,10 +21,25 @@ function App() {
   const loadVaults = useAppStore((s) => s.loadVaults);
   const glassIntensity = useSettingsStore((s) => s.glassIntensity);
   const { resolvedTheme } = useTheme();
+  const { lang } = useI18n();
 
+  // ----- Одноразовые подписки: всё общение с бэкендом через initBackendSync -----
   useEffect(() => {
-    loadVaults();
-  }, [loadVaults]);
+    if (!isTauri) return;
+    return initBackendSync();
+  }, []);
+
+  // Язык → бэкенд: проброс через i18n-context нельзя делать в подписке,
+  // потому что i18n живёт в React-Context. Дёргаем явным вызовом при изменении.
+  useEffect(() => {
+    syncAppLanguage(lang);
+  }, [lang]);
+
+  // Glass intensity зависит от темы — применяем на каждом ререндере App
+  // (тема и настройка — оба триггеры)
+  useEffect(() => {
+    applyGlassIntensity(glassIntensity, resolvedTheme === "dark");
+  }, [glassIntensity, resolvedTheme]);
 
   // Очистка корзины при старте по настройкам
   const trashRetentionDays = useSettingsStore((s) => s.trashRetentionDays);
@@ -34,115 +48,6 @@ function App() {
       useVaultStore.getState().purgeTrash(trashRetentionDays);
     }
   }, [trashRetentionDays]);
-
-  // Автобэкап по расписанию
-  const backupEnabled = useSettingsStore((s) => s.backupEnabled);
-  const backupIntervalMinutes = useSettingsStore((s) => s.backupIntervalMinutes);
-  const backupPath = useSettingsStore((s) => s.backupPath);
-  const backupKeepCount = useSettingsStore((s) => s.backupKeepCount);
-  useEffect(() => {
-    if (!isTauri) return;
-
-    // Синхронизация настроек бэкапа в Rust-слой: доверенные IPC-клиенты
-    // (расширение по chrome.alarms) бэкапят теми же параметрами.
-    // Путь и лимит копий синхроним всегда, независимо от backupEnabled:
-    // расписание расширения включается/выключается на стороне браузера.
-    invoke("set_ipc_backup_prefs", {
-      backupPath,
-      keepCount: backupKeepCount,
-    }).catch((e) => console.error("set_ipc_backup_prefs failed:", e));
-
-    if (!backupEnabled) return;
-
-    const doBackup = async () => {
-      const { activeVault, isUnlocked } = useAppStore.getState();
-      if (!activeVault || !isUnlocked) return;
-
-      try {
-        await invoke("vault_backup", {
-          request: {
-            vault_id: activeVault,
-            backup_path: backupPath,
-            keep_count: backupKeepCount,
-          },
-        });
-        useSettingsStore.getState().setLastBackup(Date.now(), true);
-      } catch (e) {
-        console.error("Auto-backup failed:", e);
-        useSettingsStore.getState().setLastBackup(Date.now(), false);
-      }
-    };
-
-    // Первый бэкап через минуту, потом по расписанию
-    const initialTimer = setTimeout(doBackup, 60 * 1000);
-    const intervalTimer = setInterval(doBackup, backupIntervalMinutes * 60 * 1000);
-
-    return () => {
-      clearTimeout(initialTimer);
-      clearInterval(intervalTimer);
-    };
-  }, [backupEnabled, backupIntervalMinutes, backupPath, backupKeepCount]);
-
-  // Автосохранение записей в зашифрованный файл (Tauri-режим, дебаунс)
-  useEffect(() => {
-    const unsubscribe = useVaultStore.subscribe((state, prev) => {
-      if (state.entries !== prev.entries) persistEntriesDebounced();
-    });
-    return unsubscribe;
-  }, []);
-
-  // Плотность стекла применяется глобально и живо, с учётом активной темы
-  useEffect(() => {
-    applyGlassIntensity(glassIntensity, resolvedTheme === "dark");
-  }, [glassIntensity, resolvedTheme]);
-
-  // Бэкенд сам затирает сессию при сворачивании в трей (lock_on_hide) —
-  // синхронизируем UI по событию
-  useEffect(() => {
-    if (!isTauri) return;
-    const unlisten = listen("vault-locked", () => {
-      void useAppStore.getState().lock();
-    });
-    return () => {
-      unlisten.then((f) => f());
-    };
-  }, []);
-
-  // Пробрасываем настройку блокировки при сворачивании в бэкенд
-  const lockOnMinimize = useSettingsStore((s) => s.lockOnMinimize);
-  useEffect(() => {
-    if (!isTauri) return;
-    invoke("set_lock_on_hide", { enabled: lockOnMinimize }).catch((e) =>
-      console.error("set_lock_on_hide failed:", e)
-    );
-  }, [lockOnMinimize]);
-
-  // Отключение системной истории буфера Windows (Win+V) — применяем
-  // при старте и при каждом изменении тумблера (на не-Windows no-op)
-  const clipboardHistoryDisabled = useSettingsStore((s) => s.clipboardHistoryDisabled);
-  useEffect(() => {
-    if (!isTauri) return;
-    invoke("clipboard_history_set_enabled", {
-      enabled: !clipboardHistoryDisabled,
-    }).catch((e) => console.error("clipboard_history_set_enabled failed:", e));
-  }, [clipboardHistoryDisabled]);
-
-  // Язык UI — в бэкенд, чтобы нативные диалоги (pairing) были на нём же
-  const { lang } = useI18n();
-  useEffect(() => {
-    if (!isTauri) return;
-    invoke("set_app_language", { lang }).catch((e) =>
-      console.error("set_app_language failed:", e)
-    );
-  }, [lang]);
-
-  // A11y: масштаб шрифта / контрастность / reduced-motion применяются глобально
-  const uiScale = useSettingsStore((s) => s.uiScale);
-  const highContrast = useSettingsStore((s) => s.highContrast);
-  const reduceMotion = useSettingsStore((s) => s.reduceMotion);
-  useEffect(() => {
-    applyAccessibility(uiScale, highContrast, reduceMotion);
-  }, [uiScale, highContrast, reduceMotion]);
 
   return (
     <div className="app-shell h-screen flex flex-col overflow-hidden">

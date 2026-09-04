@@ -326,6 +326,7 @@ pub async fn vault_unlock_biometry(
     // P1-12: passport-blob (hex после префикса) → Hello-промпт показывается
     // внутри passport_unwrap (RequestSignAsync). Legacy-запись (открытый hex)
     // — сначала явная проверка Hello, как раньше.
+    let is_legacy_hex = !stored.starts_with(PASSPORT_BLOB_PREFIX);
     let enc_key_result: Result<[u8; 32], String> =
         if let Some(blob) = stored.strip_prefix(PASSPORT_BLOB_PREFIX) {
             passport_unwrap(&request.vault_id, blob)
@@ -371,6 +372,21 @@ pub async fn vault_unlock_biometry(
 
     // Successful unlock clears the failure counter.
     state.inner.unlock_attempts.reset(&request.vault_id);
+
+    // SECURITY (P1-12 followup): legacy-запись в keyring (открытый hex)
+    // даёт любому процессу того же пользователя прочитать ключ сессии
+    // через CredRead без Hello-проверки. Здесь, сразу после успешной
+    // Hello-аутентификации, прозрачно перезаворачиваем ключ в
+    // Passport-обёртку и сохраняем обратно в keyring. Если Passport
+    // недоступен (legacy-путь), не трогаем запись — пользователь сам
+    // выберет, отключить ли Hello или мигрировать вручную.
+    if is_legacy_hex && passport_supported() {
+        if let Ok(blob) = passport_seal(&request.vault_id, &enc_key, false) {
+            if let Ok(e) = entry(&request.vault_id) {
+                let _ = e.set_password(&blob);
+            }
+        }
+    }
 
     let session = VaultSession::new(request.vault_id.clone(), enc_key, inner.payload_key);
     let entries_json = decrypt_entries(&session.payload_key, active_payload(&vault, false))

@@ -24,6 +24,13 @@ chrome.storage.session.get("pairKey", (r) => {
 });
 
 // Send a message to the native host with a hard timeout.
+// Detect integrity / signature failures from the native host and surface
+// a clear error to the popup / content scripts.
+function isIntegrityError(data) {
+  return !!(data && typeof data.message === "string" &&
+    data.message.startsWith("desktop_integrity_invalid"));
+}
+
 function sendNativeRaw(msg, timeoutMs) {
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -81,6 +88,9 @@ async function sendNative(msg) {
   });
 
   let data = await sendNativeRaw(attach(msg));
+  if (isIntegrityError(data)) {
+    return { error: "desktop_integrity_invalid", message: data.message };
+  }
   if (data && data.error === "pairing_required") {
     pairKey = null;
     notifyPairing();
@@ -89,8 +99,8 @@ async function sendNative(msg) {
         { type: "pair", client: CLIENT_NAME },
         PAIR_TIMEOUT_MS
       );
-      if (pairData && pairData.success !== false && pairData.key) {
-        pairKey = pairData.key;
+      if (pairData && pairData.success !== false && pairData.data?.key) {
+        pairKey = pairData.data.key;
         chrome.storage.session.set({ pairKey });
         data = await sendNativeRaw(attach(msg));
       }
@@ -109,7 +119,11 @@ async function getStatus(forceRefresh) {
   let data;
   try {
     const res = await sendNative({ type: "status" });
-    data = { running: true, unlocked: !!(res && res.unlocked) };
+    if (isIntegrityError(res)) {
+      data = { running: false, unlocked: false, integrityError: res.message };
+    } else {
+      data = { running: true, unlocked: !!(res && res.unlocked) };
+    }
   } catch (e) {
     data = { running: false, unlocked: false };
   }

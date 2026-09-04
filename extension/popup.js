@@ -201,7 +201,11 @@
   // ---------- status ----------
 
   function renderStatus() {
-    if (!appStatus.running) {
+    if (appStatus.integrityError) {
+      statusPill.textContent = "Tampered";
+      statusPill.className = "pill offline";
+      statusPill.title = appStatus.integrityError;
+    } else if (!appStatus.running) {
       statusPill.textContent = "Offline";
       statusPill.className = "pill offline";
     } else if (!appStatus.unlocked) {
