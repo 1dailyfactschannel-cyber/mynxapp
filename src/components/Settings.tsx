@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+﻿import { useState, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
@@ -21,7 +21,6 @@ import {
   ClipboardList,
   Fingerprint,
   CheckCircle2,
-  Eye,
   EyeOff,
   Copy,
   Keyboard,
@@ -32,7 +31,6 @@ import {
   Info,
   ExternalLink,
   RefreshCw,
-  GitMerge,
   Rows3,
   ALargeSmall,
   Contrast,
@@ -43,24 +41,22 @@ import {
 import { GlassCard } from "@/components/GlassCard";
 import { useTheme } from "next-themes";
 import { useI18n } from "@/i18n";
+import { isInvalidShortcut } from "@/lib/errors";
 import { useSettingsStore } from "@/stores/settings";
 import { useAppStore, isTauri } from "@/stores/app";
 import { EmergencyKit } from "@/components/EmergencyKit";
 import { HotkeyInput } from "@/components/HotkeyInput";
-import { useVaultStore, calculateStrength } from "@/stores/vault";
-import { useCategoryStore } from "@/stores/categories";
+import { Toggle } from "@/components/settings/ui/Toggle";
 import {
-  parseImport,
-  wipeImportResult,
-  type ImportFormat,
-  type ImportResult,
-} from "@/lib/import";
-import {
-  findDuplicate,
-  mergeDraftIntoEntry,
-  type DuplicateMatch,
-  type MergeStrategy,
-} from "@/lib/dedupe";
+  ExportModal,
+  ImportModal,
+  ChangePasswordModal,
+  DeleteDataModal,
+  DecoySetModal,
+  DecoyRemoveModal,
+  HwKeyEnableModal,
+  HwKeyDisableModal,
+} from "@/components/settings/modals";
 
 interface SettingsProps {
   isOpen: boolean;
@@ -77,11 +73,11 @@ const SECTIONS = [
   { id: "danger", icon: AlertTriangle },
 ] as const;
 
-/** Официальное расширение Mynx в Chrome Web Store */
+/** РћС„РёС†РёР°Р»СЊРЅРѕРµ СЂР°СЃС€РёСЂРµРЅРёРµ Mynx РІ Chrome Web Store */
 const EXTENSION_STORE_URL =
   "https://chromewebstore.google.com/detail/mynx/kjgmcffggjpmghjmhkhdiandaoefkmpb";
 
-/** Дефолтный хоткей «развернуть из трея» (совпадает с бэкендом) */
+/** Р”РµС„РѕР»С‚РЅС‹Р№ С…РѕС‚РєРµР№ В«СЂР°Р·РІРµСЂРЅСѓС‚СЊ РёР· С‚СЂРµСЏВ» (СЃРѕРІРїР°РґР°РµС‚ СЃ Р±СЌРєРµРЅРґРѕРј) */
 const TRAY_HOTKEY_DEFAULT = "Ctrl+Shift+M";
 
 export function Settings({ isOpen, onClose }: SettingsProps) {
@@ -127,7 +123,7 @@ export function Settings({ isOpen, onClose }: SettingsProps) {
   const setClipboardHistoryDisabled = useSettingsStore((s) => s.setClipboardHistoryDisabled);
   const activeVault = useAppStore((s) => s.activeVault);
 
-  // Внешний вид / a11y
+  // Р’РЅРµС€РЅРёР№ РІРёРґ / a11y
   const density = useSettingsStore((s) => s.density);
   const setDensity = useSettingsStore((s) => s.setDensity);
   const uiScale = useSettingsStore((s) => s.uiScale);
@@ -139,7 +135,7 @@ export function Settings({ isOpen, onClose }: SettingsProps) {
   const faviconAutoFetch = useSettingsStore((s) => s.faviconAutoFetch);
   const setFaviconAutoFetch = useSettingsStore((s) => s.setFaviconAutoFetch);
 
-  // Статус автобэкапа
+  // РЎС‚Р°С‚СѓСЃ Р°РІС‚РѕР±СЌРєР°РїР°
   const lastBackupAt = useSettingsStore((s) => s.lastBackupAt);
   const lastBackupOk = useSettingsStore((s) => s.lastBackupOk);
   const setLastBackup = useSettingsStore((s) => s.setLastBackup);
@@ -165,12 +161,12 @@ export function Settings({ isOpen, onClose }: SettingsProps) {
   const [bioEnabled, setBioEnabled] = useState(false);
   const [bioError, setBioError] = useState("");
 
-  // Хоткей «развернуть из трея» (хранится и применяется на бэкенде)
+  // РҐРѕС‚РєРµР№ В«СЂР°Р·РІРµСЂРЅСѓС‚СЊ РёР· С‚СЂРµСЏВ» (С…СЂР°РЅРёС‚СЃСЏ Рё РїСЂРёРјРµРЅСЏРµС‚СЃСЏ РЅР° Р±СЌРєРµРЅРґРµ)
   const [trayHotkey, setTrayHotkey] = useState("");
   const [trayHotkeyError, setTrayHotkeyError] = useState("");
   const trayHotkeyApplied = useRef<string | null>(null);
 
-  // Автообновления
+  // РђРІС‚РѕРѕР±РЅРѕРІР»РµРЅРёСЏ
   const [appVersion, setAppVersion] = useState("");
 
   useEffect(() => {
@@ -189,7 +185,7 @@ export function Settings({ isOpen, onClose }: SettingsProps) {
         .refreshDecoyStatus()
         .catch(() => {});
 
-      // Windows Hello: доступность на устройстве и статус для активного vault
+      // Windows Hello: РґРѕСЃС‚СѓРїРЅРѕСЃС‚СЊ РЅР° СѓСЃС‚СЂРѕР№СЃС‚РІРµ Рё СЃС‚Р°С‚СѓСЃ РґР»СЏ Р°РєС‚РёРІРЅРѕРіРѕ vault
       setBioError("");
       invoke<boolean>("biometry_is_available")
         .then(async (available) => {
@@ -208,7 +204,7 @@ export function Settings({ isOpen, onClose }: SettingsProps) {
           setBioEnabled(false);
         });
 
-      // Текущий хоткей трея (null = отключён)
+      // РўРµРєСѓС‰РёР№ С…РѕС‚РєРµР№ С‚СЂРµСЏ (null = РѕС‚РєР»СЋС‡С‘РЅ)
       invoke<string | null>("tray_hotkey_get")
         .then((s) => {
           setTrayHotkey(s ?? "");
@@ -229,7 +225,7 @@ export function Settings({ isOpen, onClose }: SettingsProps) {
     setTimeout(() => setTokenCopied(false), 2000);
   };
 
-  /** Ручной бэкап той же командой, что и шедулер */
+  /** Р СѓС‡РЅРѕР№ Р±СЌРєР°Рї С‚РѕР№ Р¶Рµ РєРѕРјР°РЅРґРѕР№, С‡С‚Рѕ Рё С€РµРґСѓР»РµСЂ */
   const runBackupNow = async () => {
     if (!isTauri || !activeVault || backupRunning) return;
     setBackupRunning(true);
@@ -250,7 +246,7 @@ export function Settings({ isOpen, onClose }: SettingsProps) {
     }
   };
 
-  /** Включение/выключение Windows Hello для активного vault (vault разблокирован) */
+  /** Р’РєР»СЋС‡РµРЅРёРµ/РІС‹РєР»СЋС‡РµРЅРёРµ Windows Hello РґР»СЏ Р°РєС‚РёРІРЅРѕРіРѕ vault (vault СЂР°Р·Р±Р»РѕРєРёСЂРѕРІР°РЅ) */
   const toggleBiometry = async (v: boolean) => {
     if (!isTauri || !activeVault) return;
     setBioError("");
@@ -264,7 +260,7 @@ export function Settings({ isOpen, onClose }: SettingsProps) {
       }
     } catch (e) {
       const raw = String(e ?? "");
-      // Отмена системного диалога — не ошибка, просто не меняем состояние
+      // РћС‚РјРµРЅР° СЃРёСЃС‚РµРјРЅРѕРіРѕ РґРёР°Р»РѕРіР° вЂ” РЅРµ РѕС€РёР±РєР°, РїСЂРѕСЃС‚Рѕ РЅРµ РјРµРЅСЏРµРј СЃРѕСЃС‚РѕСЏРЅРёРµ
       if (raw.includes("biometry_cancelled")) return;
       setBioError(
         raw.includes("biometry_requires_real_vault")
@@ -274,13 +270,13 @@ export function Settings({ isOpen, onClose }: SettingsProps) {
     }
   };
 
-  /** Применить хоткей трея: пустая строка = отключить. Бэкенд при смене
-   *  перерегистрирует все глобальные шорткаты — поднимаем epoch, чтобы
-   *  VaultScreen перевесил свои обработчики. */
+  /** РџСЂРёРјРµРЅРёС‚СЊ С…РѕС‚РєРµР№ С‚СЂРµСЏ: РїСѓСЃС‚Р°СЏ СЃС‚СЂРѕРєР° = РѕС‚РєР»СЋС‡РёС‚СЊ. Р‘СЌРєРµРЅРґ РїСЂРё СЃРјРµРЅРµ
+   *  РїРµСЂРµСЂРµРіРёСЃС‚СЂРёСЂСѓРµС‚ РІСЃРµ РіР»РѕР±Р°Р»СЊРЅС‹Рµ С€РѕСЂС‚РєР°С‚С‹ вЂ” РїРѕРґРЅРёРјР°РµРј epoch, С‡С‚РѕР±С‹
+   *  VaultScreen РїРµСЂРµРІРµСЃРёР» СЃРІРѕРё РѕР±СЂР°Р±РѕС‚С‡РёРєРё. */
   const applyTrayHotkey = async (value: string) => {
     if (!isTauri) return;
     const shortcut = value.trim();
-    // Не дёргаем бэкенд, если ничего не изменилось (blur без правок)
+    // РќРµ РґС‘СЂРіР°РµРј Р±СЌРєРµРЅРґ, РµСЃР»Рё РЅРёС‡РµРіРѕ РЅРµ РёР·РјРµРЅРёР»РѕСЃСЊ (blur Р±РµР· РїСЂР°РІРѕРє)
     if (trayHotkeyApplied.current !== null && shortcut === trayHotkeyApplied.current) {
       setTrayHotkeyError("");
       return;
@@ -293,7 +289,7 @@ export function Settings({ isOpen, onClose }: SettingsProps) {
       useSettingsStore.getState().bumpHotkeysEpoch();
     } catch (e) {
       setTrayHotkeyError(
-        String(e ?? "").includes("invalid_shortcut")
+        isInvalidShortcut(e)
           ? t("hotkeyInvalid")
           : String(e ?? "")
       );
@@ -664,7 +660,7 @@ export function Settings({ isOpen, onClose }: SettingsProps) {
                         />
                       </div>
 
-                      {/* Плотность интерфейса */}
+                      {/* РџР»РѕС‚РЅРѕСЃС‚СЊ РёРЅС‚РµСЂС„РµР№СЃР° */}
                       <div className="space-y-2">
                         <div className="flex items-center gap-2">
                           <Rows3 className="w-4 h-4 t3" />
@@ -687,7 +683,7 @@ export function Settings({ isOpen, onClose }: SettingsProps) {
                         </div>
                       </div>
 
-                      {/* Масштаб шрифта (a11y) */}
+                      {/* РњР°СЃС€С‚Р°Р± С€СЂРёС„С‚Р° (a11y) */}
                       <div className="space-y-2">
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-2">
@@ -707,7 +703,7 @@ export function Settings({ isOpen, onClose }: SettingsProps) {
                         />
                       </div>
 
-                      {/* Контрастность и анимация (a11y) */}
+                      {/* РљРѕРЅС‚СЂР°СЃС‚РЅРѕСЃС‚СЊ Рё Р°РЅРёРјР°С†РёСЏ (a11y) */}
                       <div className="space-y-3">
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-2">
@@ -741,7 +737,7 @@ export function Settings({ isOpen, onClose }: SettingsProps) {
                         <div className="grid grid-cols-2 gap-2">
                           {[
                             { id: "en", label: "English" },
-                            { id: "ru", label: "Русский" },
+                            { id: "ru", label: "Р СѓСЃСЃРєРёР№" },
                           ].map((l) => (
                             <button
                               key={l.id}
@@ -822,7 +818,7 @@ export function Settings({ isOpen, onClose }: SettingsProps) {
                                 <span className="text-xs t3">{t("backupInterval")}</span>
                                 <span className="text-xs t2 font-mono">{t("backupIntervalMin", backupIntervalMinutes)}</span>
                               </div>
-                              {/* Пресеты расписания */}
+                              {/* РџСЂРµСЃРµС‚С‹ СЂР°СЃРїРёСЃР°РЅРёСЏ */}
                               <div className="grid grid-cols-5 gap-1.5">
                                 {[15, 60, 360, 1440, 10080].map((m) => (
                                   <button
@@ -887,7 +883,7 @@ export function Settings({ isOpen, onClose }: SettingsProps) {
                               />
                             </div>
 
-                            {/* Статус последнего бэкапа + ручной запуск */}
+                            {/* РЎС‚Р°С‚СѓСЃ РїРѕСЃР»РµРґРЅРµРіРѕ Р±СЌРєР°РїР° + СЂСѓС‡РЅРѕР№ Р·Р°РїСѓСЃРє */}
                             <div
                               className="flex items-center justify-between gap-2 rounded-xl px-3 py-2.5"
                               style={{
@@ -1034,7 +1030,7 @@ export function Settings({ isOpen, onClose }: SettingsProps) {
                         <div>
                           <p className="text-sm font-semibold t1">{t("appName")}</p>
                           <p className="text-xs t3 font-mono">
-                            {appVersion ? t("appVersion", appVersion) : "…"}
+                            {appVersion ? t("appVersion", appVersion) : "вЂ¦"}
                           </p>
                         </div>
                       </div>
@@ -1122,1350 +1118,5 @@ export function Settings({ isOpen, onClose }: SettingsProps) {
             onDeleted={onClose}
           />
     </motion.div>
-  );
-}
-
-/* ================================================================== */
-/* Общие элементы модалок действий                                     */
-/* ================================================================== */
-
-function ActionModal({
-  title,
-  icon,
-  onClose,
-  children,
-}: {
-  title: string;
-  icon: React.ReactNode;
-  onClose: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      className="fixed inset-0 z-[55]"
-    >
-      <div className="overlay absolute inset-0" onClick={onClose} />
-      <motion.div
-        initial={{ opacity: 0, scale: 0.95, y: 20 }}
-        animate={{ opacity: 1, scale: 1, y: 0 }}
-        className="absolute inset-0 flex items-center justify-center z-[60] p-6 pointer-events-none"
-      >
-        <GlassCard className="w-full max-w-md pointer-events-auto">
-          <div className="p-6 space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                {icon}
-                <h3 className="text-base font-semibold t1">{title}</h3>
-              </div>
-              <button onClick={onClose} className="icon-btn">
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            {children}
-          </div>
-        </GlassCard>
-      </motion.div>
-    </motion.div>
-  );
-}
-
-function PasswordField({
-  value,
-  onChange,
-  placeholder,
-  onEnter,
-  autoFocus,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  placeholder?: string;
-  onEnter?: () => void;
-  autoFocus?: boolean;
-}) {
-  const [show, setShow] = useState(false);
-  return (
-    <div className="relative">
-      <input
-        type={show ? "text" : "password"}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") onEnter?.();
-        }}
-        placeholder={placeholder}
-        autoFocus={autoFocus}
-        className="field rounded-xl px-3.5 py-2.5 pr-10 text-sm"
-      />
-      <button
-        type="button"
-        onClick={() => setShow(!show)}
-        className="absolute right-2.5 top-1/2 -translate-y-1/2 t3"
-        tabIndex={-1}
-      >
-        {show ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-      </button>
-    </div>
-  );
-}
-
-function FieldLabel({ children }: { children: React.ReactNode }) {
-  return <span className="block text-xs t3 mb-1.5">{children}</span>;
-}
-
-/* ================================================================== */
-/* Экспорт зашифрованной копии                                         */
-/* ================================================================== */
-
-function ExportModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
-  const { t } = useI18n();
-  const exportVault = useAppStore((s) => s.exportVault);
-
-  const [password, setPassword] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [savedPath, setSavedPath] = useState<string | null>(null);
-  const [downloadStarted, setDownloadStarted] = useState(false);
-
-  const reset = () => {
-    setPassword("");
-    setBusy(false);
-    setError(null);
-    setSavedPath(null);
-    setDownloadStarted(false);
-  };
-  const close = () => {
-    reset();
-    onClose();
-  };
-
-  const submit = async () => {
-    if (!password || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const result = await exportVault(password);
-      if (result === "") {
-        // Пользователь отменил диалог сохранения
-        close();
-        return;
-      }
-      if (result === "download") setDownloadStarted(true);
-      else setSavedPath(result);
-    } catch (e) {
-      setError(
-        String(e).includes("wrong_password")
-          ? t("wrongCurrentPassword")
-          : `${t("exportFailed")}: ${String(e)}`
-      );
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const finished = savedPath !== null || downloadStarted;
-
-  if (!isOpen) return null;
-
-
-  return (
-        <ActionModal
-          title={t("exportModalTitle")}
-          icon={
-            <div className="icon-badge neutral w-9 h-9">
-              <Upload className="w-4 h-4" />
-            </div>
-          }
-          onClose={close}
-        >
-          {finished ? (
-            <>
-              <div
-                className="flex items-start gap-2 text-sm"
-                style={{ color: "var(--accent)" }}
-              >
-                <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" />
-                {downloadStarted ? (
-                  <span>{t("exportDownloadStarted")}</span>
-                ) : (
-                  <span className="break-all">
-                    {t("exportSuccess")} {savedPath}
-                  </span>
-                )}
-              </div>
-              <button onClick={close} className="btn-primary w-full py-2.5 text-sm">
-                {t("close")}
-              </button>
-            </>
-          ) : (
-            <>
-              <p className="text-sm t2">{t("exportModalDesc")}</p>
-              <div>
-                <FieldLabel>{t("masterPasswordLabel")}</FieldLabel>
-                <PasswordField
-                  value={password}
-                  onChange={setPassword}
-                  placeholder={t("masterPassword")}
-                  onEnter={submit}
-                  autoFocus
-                />
-              </div>
-              {error && (
-                <p className="text-xs" style={{ color: "var(--danger)" }}>
-                  {error}
-                </p>
-              )}
-              <div className="flex gap-2">
-                <button onClick={close} className="btn-ghost flex-1 py-2.5 text-sm">
-                  {t("cancel")}
-                </button>
-                <button
-                  onClick={submit}
-                  disabled={!password || busy}
-                  className="btn-primary flex-1 py-2.5 text-sm"
-                >
-                  {busy ? t("working") : t("exportSubmit")}
-                </button>
-              </div>
-            </>
-          )}
-        </ActionModal>
-
-  );
-}
-
-/* ================================================================== */
-/* Импорт паролей из сторонних менеджеров                              */
-/* ================================================================== */
-
-const IMPORT_FORMATS: { id: ImportFormat; labelKey: string }[] = [
-  { id: "auto", labelKey: "importFormatAuto" },
-  { id: "bitwarden-json", labelKey: "importFmtBitwardenJson" },
-  { id: "bitwarden-csv", labelKey: "importFmtBitwardenCsv" },
-  { id: "onepassword-json", labelKey: "importFmt1PasswordJson" },
-  { id: "onepassword-csv", labelKey: "importFmt1Password" },
-  { id: "keepass-csv", labelKey: "importFmtKeePass" },
-  { id: "keepassxc-json", labelKey: "importFmtKeePassXcJson" },
-  { id: "lastpass-csv", labelKey: "importFmtLastPass" },
-  { id: "dashlane-csv", labelKey: "importFmtDashlane" },
-  { id: "protonpass-csv", labelKey: "importFmtProtonPass" },
-  { id: "firefox-csv", labelKey: "importFmtFirefox" },
-  { id: "chrome-csv", labelKey: "importFmtChrome" },
-];
-
-function ImportModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
-  const { t } = useI18n();
-  const addEntry = useVaultStore((s) => s.addEntry);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  // Зеркало parsed в ref, чтобы сброс при закрытии не тащил parsed в deps эффекта
-  const parsedRef = useRef<ImportResult | null>(null);
-
-  const [format, setFormat] = useState<ImportFormat>("auto");
-  const [file, setFile] = useState<File | null>(null);
-  const [parsed, setParsed] = useState<ImportResult | null>(null);
-  const [parseError, setParseError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  /** Что делать с дублями: пропустить / слить / создать копию */
-  const [strategy, setStrategy] = useState<MergeStrategy>("merge");
-  const [done, setDone] = useState<{
-    imported: number;
-    skipped: number;
-    errors: number;
-    merged: number;
-    dupSkipped: number;
-  } | null>(null);
-
-  const wipeParsed = () => {
-    if (parsedRef.current) {
-      wipeImportResult(parsedRef.current);
-      parsedRef.current = null;
-    }
-    setParsed(null);
-  };
-
-  // Сброс состояния и очистка секретов из памяти при закрытии
-  useEffect(() => {
-    if (isOpen) return;
-    if (parsedRef.current) {
-      wipeImportResult(parsedRef.current);
-      parsedRef.current = null;
-    }
-    setFormat("auto");
-    setFile(null);
-    setParsed(null);
-    setParseError(null);
-    setBusy(false);
-    setStrategy("merge");
-    setDone(null);
-    if (fileInputRef.current) fileInputRef.current.value = "";
-  }, [isOpen]);
-
-  const close = () => {
-    wipeParsed();
-    onClose();
-  };
-
-  const parseFile = async (f: File, fmt: ImportFormat) => {
-    setBusy(true);
-    setParseError(null);
-    setDone(null);
-    wipeParsed();
-    try {
-      const text = await f.text();
-      const result = parseImport(fmt, text);
-      // Сырая строка text больше не нужна: секреты живут только в result
-      // и затираются wipeImportResult после импорта/закрытия
-      parsedRef.current = result;
-      setParsed(result);
-    } catch (e) {
-      setParseError(`${t("importFailed")}: ${String(e)}`);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  // Предпросмотр дублей: считаем на каждый разобранный файл
-  const duplicates = useMemo(() => {
-    if (!parsed) return [] as (DuplicateMatch | null)[];
-    const existing = useVaultStore.getState().entries;
-    return parsed.drafts.map((d) => findDuplicate(existing, d));
-  }, [parsed]);
-  const dupCount = duplicates.filter(Boolean).length;
-
-  const runImport = () => {
-    if (!parsed || busy) return;
-    setBusy(true);
-    let imported = 0;
-    let errors = 0;
-    let merged = 0;
-    let dupSkipped = 0;
-    try {
-      // Папки исходного файла → категории vault
-      const catStore = useCategoryStore.getState();
-      const folderToCategory = new Map<string, string>();
-      for (const folder of parsed.folders) {
-        const existing = catStore.categories.find(
-          (c) => c.id === folder || c.label.toLowerCase() === folder.toLowerCase()
-        );
-        if (existing) {
-          folderToCategory.set(folder, existing.id);
-        } else {
-          const created = catStore.addCategory(folder);
-          folderToCategory.set(folder, created ? created.id : folder);
-        }
-      }
-
-      const resolveCategory = (draftCat: string) =>
-        draftCat ? (folderToCategory.get(draftCat) ?? draftCat) : "";
-
-      parsed.drafts.forEach((draft, i) => {
-        try {
-          const dup = duplicates[i];
-          if (dup) {
-            if (strategy === "skip") {
-              dupSkipped++;
-              return;
-            }
-            if (strategy === "merge") {
-              const patch = mergeDraftIntoEntry(dup.entry, draft);
-              const cat = resolveCategory(draft.category);
-              if (cat && !dup.entry.category) patch.category = cat;
-              if (Object.keys(patch).length > 0) {
-                useVaultStore.getState().updateEntry(dup.entry.id, patch);
-              }
-              merged++;
-              return;
-            }
-            // strategy === "duplicate" — падаем ниже и создаём копию
-          }
-          addEntry({
-            id: crypto.randomUUID(),
-            title: draft.title,
-            username: draft.username,
-            password: draft.password,
-            url: draft.url,
-            category: resolveCategory(draft.category),
-            tags: [],
-            favorite: draft.favorite,
-            strength: calculateStrength(draft.password),
-            icon: draft.title.charAt(0).toUpperCase() || "🔑",
-            notes: draft.notes,
-            totpSecret: draft.totpSecret,
-            customFields: draft.customFields,
-          });
-          imported++;
-        } catch {
-          errors++;
-        }
-      });
-      setDone({ imported, skipped: parsed.skipped, errors, merged, dupSkipped });
-    } finally {
-      wipeParsed();
-      setBusy(false);
-    }
-  };
-
-  if (!isOpen) return null;
-
-  return (
-    <ActionModal
-      title={t("importModalTitle")}
-      icon={
-        <div className="icon-badge neutral w-9 h-9">
-          <Download className="w-4 h-4" />
-        </div>
-      }
-      onClose={close}
-    >
-      {done ? (
-        <>
-          <div className="flex items-start gap-2 text-sm" style={{ color: "var(--accent)" }}>
-            <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" />
-            <span>{t("importDone", done.imported, done.skipped, done.errors)}</span>
-          </div>
-          {(done.merged > 0 || done.dupSkipped > 0) && (
-            <div className="flex items-start gap-2 text-sm t2">
-              <GitMerge className="w-4 h-4 mt-0.5 shrink-0" style={{ color: "var(--info)" }} />
-              <span>{t("importDedup", done.merged, done.dupSkipped)}</span>
-            </div>
-          )}
-          <button onClick={close} className="btn-primary w-full py-2.5 text-sm">
-            {t("close")}
-          </button>
-        </>
-      ) : (
-        <>
-          <p className="text-sm t2">{t("importModalDesc")}</p>
-          <div>
-            <FieldLabel>{t("importFormatLabel")}</FieldLabel>
-            <select
-              value={format}
-              onChange={(e) => {
-                const fmt = e.target.value as ImportFormat;
-                setFormat(fmt);
-                if (file) void parseFile(file, fmt);
-              }}
-              className="field rounded-xl px-3.5 py-2.5 text-sm w-full"
-            >
-              {IMPORT_FORMATS.map((f) => (
-                <option key={f.id} value={f.id}>
-                  {t(f.labelKey)}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".csv,.json,text/csv,application/json"
-              className="hidden"
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) {
-                  setFile(f);
-                  void parseFile(f, format);
-                }
-              }}
-            />
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              className="btn-ghost w-full justify-start p-3 text-sm"
-            >
-              <Folder className="w-4 h-4 t3" />
-              <span className="flex-1 text-left truncate">
-                {file ? file.name : t("importChooseFile")}
-              </span>
-            </button>
-          </div>
-          {parseError && (
-            <p className="text-xs" style={{ color: "var(--danger)" }}>
-              {parseError}
-            </p>
-          )}
-          {parsed &&
-            !parseError &&
-            (parsed.drafts.length > 0 ? (
-              <div className="text-sm t2 space-y-1">
-                <p>{t("importPreview", parsed.drafts.length, parsed.folders.length)}</p>
-                {parsed.skipped > 0 && (
-                  <p className="text-xs t3">{t("importPreviewSkipped", parsed.skipped)}</p>
-                )}
-                {dupCount > 0 && (
-                  <div className="pt-2 space-y-2">
-                    <p className="flex items-center gap-2 text-xs" style={{ color: "var(--warn)" }}>
-                      <GitMerge className="w-3.5 h-3.5" />
-                      {t("importDuplicatesFound", dupCount)}
-                    </p>
-                    <div className="grid grid-cols-3 gap-2">
-                      {(
-                        [
-                          ["merge", t("importStrategyMerge")],
-                          ["skip", t("importStrategySkip")],
-                          ["duplicate", t("importStrategyDuplicate")],
-                        ] as const
-                      ).map(([id, label]) => (
-                        <button
-                          key={id}
-                          onClick={() => setStrategy(id)}
-                          className={`segment ${strategy === id ? "active" : ""} !text-xs`}
-                          title={
-                            id === "merge"
-                              ? t("importStrategyMergeHint")
-                              : id === "skip"
-                              ? t("importStrategySkipHint")
-                              : t("importStrategyDuplicateHint")
-                          }
-                        >
-                          {label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <p className="text-xs" style={{ color: "var(--warn)" }}>
-                {t("importNoEntries")}
-              </p>
-            ))}
-          <div className="flex gap-2">
-            <button onClick={close} className="btn-ghost flex-1 py-2.5 text-sm">
-              {t("cancel")}
-            </button>
-            <button
-              onClick={runImport}
-              disabled={!parsed || parsed.drafts.length === 0 || busy}
-              className="btn-primary flex-1 py-2.5 text-sm"
-            >
-              {busy ? t("working") : t("importSubmit")}
-            </button>
-          </div>
-        </>
-      )}
-    </ActionModal>
-  );
-}
-
-/* ================================================================== */
-/* Смена мастер-пароля                                                 */
-/* ================================================================== */
-
-function ChangePasswordModal({
-  isOpen,
-  onClose,
-}: {
-  isOpen: boolean;
-  onClose: () => void;
-}) {
-  const { t } = useI18n();
-  const changeMasterPassword = useAppStore((s) => s.changeMasterPassword);
-
-  const [current, setCurrent] = useState("");
-  const [next, setNext] = useState("");
-  const [confirm, setConfirm] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [done, setDone] = useState(false);
-
-  const reset = () => {
-    setCurrent("");
-    setNext("");
-    setConfirm("");
-    setBusy(false);
-    setError(null);
-    setDone(false);
-  };
-  const close = () => {
-    reset();
-    onClose();
-  };
-
-  const submit = async () => {
-    if (busy) return;
-    if (next.length < 8) {
-      setError(t("pwTooShort"));
-      return;
-    }
-    if (next !== confirm) {
-      setError(t("passwordsMismatch"));
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      await changeMasterPassword(current, next);
-      setDone(true);
-    } catch (e) {
-      setError(
-        String(e).includes("wrong_password")
-          ? t("wrongCurrentPassword")
-          : String(e)
-      );
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const canSubmit = current.length > 0 && next.length > 0 && confirm.length > 0 && !busy;
-
-  if (!isOpen) return null;
-
-
-  return (
-        <ActionModal
-          title={t("changePwTitle")}
-          icon={
-            <div className="icon-badge neutral w-9 h-9">
-              <Lock className="w-4 h-4" />
-            </div>
-          }
-          onClose={close}
-        >
-          {done ? (
-            <>
-              <div
-                className="flex items-center gap-2 text-sm"
-                style={{ color: "var(--accent)" }}
-              >
-                <CheckCircle2 className="w-4 h-4 shrink-0" />
-                {t("changePwSuccess")}
-              </div>
-              <button onClick={close} className="btn-primary w-full py-2.5 text-sm">
-                {t("close")}
-              </button>
-            </>
-          ) : (
-            <>
-              <p className="text-sm t2">{t("changePwDesc")}</p>
-              <div>
-                <FieldLabel>{t("currentPassword")}</FieldLabel>
-                <PasswordField
-                  value={current}
-                  onChange={setCurrent}
-                  placeholder={t("currentPassword")}
-                  autoFocus
-                />
-              </div>
-              <div>
-                <FieldLabel>{t("newPassword")}</FieldLabel>
-                <PasswordField
-                  value={next}
-                  onChange={setNext}
-                  placeholder={t("newPassword")}
-                />
-              </div>
-              <div>
-                <FieldLabel>{t("confirmPasswordLabel")}</FieldLabel>
-                <PasswordField
-                  value={confirm}
-                  onChange={setConfirm}
-                  placeholder={t("confirmPasswordLabel")}
-                  onEnter={submit}
-                />
-              </div>
-              {error && (
-                <p className="text-xs" style={{ color: "var(--danger)" }}>
-                  {error}
-                </p>
-              )}
-              <div className="flex gap-2">
-                <button onClick={close} className="btn-ghost flex-1 py-2.5 text-sm">
-                  {t("cancel")}
-                </button>
-                <button
-                  onClick={submit}
-                  disabled={!canSubmit}
-                  className="btn-primary flex-1 py-2.5 text-sm"
-                >
-                  {busy ? t("working") : t("changePwSubmit")}
-                </button>
-              </div>
-            </>
-          )}
-        </ActionModal>
-
-  );
-}
-
-/* ================================================================== */
-/* Удаление всех данных                                                */
-/* ================================================================== */
-
-function DeleteDataModal({
-  isOpen,
-  onClose,
-  onDeleted,
-}: {
-  isOpen: boolean;
-  onClose: () => void;
-  onDeleted: () => void;
-}) {
-  const { t } = useI18n();
-  const deleteAllData = useAppStore((s) => s.deleteAllData);
-
-  const [confirmText, setConfirmText] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const reset = () => {
-    setConfirmText("");
-    setBusy(false);
-    setError(null);
-  };
-  const close = () => {
-    reset();
-    onClose();
-  };
-
-  const word = confirmText.trim().toUpperCase();
-  const canDelete = (word === "DELETE" || word === "УДАЛИТЬ") && !busy;
-
-  const submit = async () => {
-    if (!canDelete) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await deleteAllData();
-      reset();
-      onDeleted(); // закрывает и настройки — приложение вернётся к онбордингу
-    } catch (e) {
-      setError(String(e));
-      setBusy(false);
-    }
-  };
-
-  if (!isOpen) return null;
-
-
-  return (
-        <ActionModal
-          title={t("deleteModalTitle")}
-          icon={
-            <div className="icon-badge neutral w-9 h-9">
-              <Trash2 className="w-4 h-4" style={{ color: "var(--danger)" }} />
-            </div>
-          }
-          onClose={close}
-        >
-          <div
-            className="flex items-start gap-2 text-sm"
-            style={{ color: "var(--danger-soft-text)" }}
-          >
-            <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
-            <p>{t("deleteModalDesc")}</p>
-          </div>
-          <div>
-            <FieldLabel>{t("deleteTypeHint", t("deleteWord"))}</FieldLabel>
-            <input
-              type="text"
-              value={confirmText}
-              onChange={(e) => setConfirmText(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") submit();
-              }}
-              placeholder={t("deleteWord")}
-              autoFocus
-              className="field rounded-xl px-3.5 py-2.5 text-sm font-mono"
-            />
-          </div>
-          {error && (
-            <p className="text-xs" style={{ color: "var(--danger)" }}>
-              {error}
-            </p>
-          )}
-          <div className="flex gap-2">
-            <button onClick={close} className="btn-ghost flex-1 py-2.5 text-sm">
-              {t("cancel")}
-            </button>
-            <button
-              onClick={submit}
-              disabled={!canDelete}
-              className="btn-primary flex-1 py-2.5 text-sm"
-              style={{ background: "var(--danger)", boxShadow: "none" }}
-            >
-              {busy ? t("working") : t("deleteSubmit")}
-            </button>
-          </div>
-        </ActionModal>
-
-  );
-}
-
-/* ================================================================== */
-/* Слой обмана: установка и отключение ложного пароля                  */
-/* ================================================================== */
-
-function DecoySetModal({
-  isOpen,
-  onClose,
-}: {
-  isOpen: boolean;
-  onClose: () => void;
-}) {
-  const { t } = useI18n();
-  const setDecoyPassword = useAppStore((s) => s.setDecoyPassword);
-
-  const [master, setMaster] = useState("");
-  const [decoy, setDecoy] = useState("");
-  const [confirm, setConfirm] = useState("");
-  const [oldDecoy, setOldDecoy] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [done, setDone] = useState(false);
-
-  const reset = () => {
-    setMaster("");
-    setDecoy("");
-    setConfirm("");
-    setOldDecoy("");
-    setBusy(false);
-    setError(null);
-    setDone(false);
-  };
-  const close = () => {
-    reset();
-    onClose();
-  };
-
-  const submit = async () => {
-    if (busy) return;
-    if (decoy.length < 8) {
-      setError(t("pwTooShort"));
-      return;
-    }
-    if (decoy !== confirm) {
-      setError(t("passwordsMismatch"));
-      return;
-    }
-    if (decoy === master) {
-      setError(t("decoyEqualsMaster"));
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      await setDecoyPassword(master, decoy, oldDecoy || undefined);
-      setDone(true);
-    } catch (e) {
-      const msg = String(e);
-      setError(
-        msg.includes("decoy_equals_master")
-          ? t("decoyEqualsMaster")
-          : msg.includes("password_too_short")
-          ? t("pwTooShort")
-          : msg.includes("wrong_password")
-          ? t("wrongCurrentPassword")
-          : msg
-      );
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const canSubmit = master.length > 0 && decoy.length > 0 && confirm.length > 0 && !busy;
-
-  if (!isOpen) return null;
-
-  return (
-    <ActionModal
-      title={t("decoySetTitle")}
-      icon={
-        <div className="icon-badge neutral w-9 h-9">
-          <EyeOff className="w-4 h-4" />
-        </div>
-      }
-      onClose={close}
-    >
-      {done ? (
-        <>
-          <div
-            className="flex items-center gap-2 text-sm"
-            style={{ color: "var(--accent)" }}
-          >
-            <CheckCircle2 className="w-4 h-4 shrink-0" />
-            {t("decoySetSuccess")}
-          </div>
-          <button onClick={close} className="btn-primary w-full py-2.5 text-sm">
-            {t("close")}
-          </button>
-        </>
-      ) : (
-        <>
-          <p className="text-sm t2">{t("decoySetDesc")}</p>
-          <div>
-            <FieldLabel>{t("masterPasswordLabel")}</FieldLabel>
-            <PasswordField
-              value={master}
-              onChange={setMaster}
-              placeholder={t("masterPasswordLabel")}
-              autoFocus
-            />
-          </div>
-          <div>
-            <FieldLabel>{t("decoyPasswordLabel")}</FieldLabel>
-            <PasswordField
-              value={decoy}
-              onChange={setDecoy}
-              placeholder={t("decoyPasswordLabel")}
-            />
-          </div>
-          <div>
-            <FieldLabel>{t("confirmPasswordLabel")}</FieldLabel>
-            <PasswordField
-              value={confirm}
-              onChange={setConfirm}
-              placeholder={t("confirmPasswordLabel")}
-              onEnter={submit}
-            />
-          </div>
-          <div>
-            <FieldLabel>{t("decoyOldPasswordLabel")}</FieldLabel>
-            <PasswordField
-              value={oldDecoy}
-              onChange={setOldDecoy}
-              placeholder={t("decoyPasswordLabel")}
-            />
-          </div>
-          {error && (
-            <p className="text-xs" style={{ color: "var(--danger)" }}>
-              {error}
-            </p>
-          )}
-          <div className="flex gap-2">
-            <button onClick={close} className="btn-ghost flex-1 py-2.5 text-sm">
-              {t("cancel")}
-            </button>
-            <button
-              onClick={submit}
-              disabled={!canSubmit}
-              className="btn-primary flex-1 py-2.5 text-sm"
-            >
-              {busy ? t("working") : t("save")}
-            </button>
-          </div>
-        </>
-      )}
-    </ActionModal>
-  );
-}
-
-function DecoyRemoveModal({
-  isOpen,
-  onClose,
-}: {
-  isOpen: boolean;
-  onClose: () => void;
-}) {
-  const { t } = useI18n();
-  const removeDecoy = useAppStore((s) => s.removeDecoy);
-
-  const [master, setMaster] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [done, setDone] = useState(false);
-
-  const reset = () => {
-    setMaster("");
-    setBusy(false);
-    setError(null);
-    setDone(false);
-  };
-  const close = () => {
-    reset();
-    onClose();
-  };
-
-  const submit = async () => {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await removeDecoy(master);
-      setDone(true);
-    } catch (e) {
-      const msg = String(e);
-      setError(msg.includes("wrong_password") ? t("wrongCurrentPassword") : msg);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  if (!isOpen) return null;
-
-  return (
-    <ActionModal
-      title={t("decoyRemoveTitle")}
-      icon={
-        <div className="icon-badge neutral w-9 h-9">
-          <EyeOff className="w-4 h-4" />
-        </div>
-      }
-      onClose={close}
-    >
-      {done ? (
-        <>
-          <div
-            className="flex items-center gap-2 text-sm"
-            style={{ color: "var(--accent)" }}
-          >
-            <CheckCircle2 className="w-4 h-4 shrink-0" />
-            {t("decoyRemoveSuccess")}
-          </div>
-          <button onClick={close} className="btn-primary w-full py-2.5 text-sm">
-            {t("close")}
-          </button>
-        </>
-      ) : (
-        <>
-          <p className="text-sm t2">{t("decoyRemoveDesc")}</p>
-          <div>
-            <FieldLabel>{t("masterPasswordLabel")}</FieldLabel>
-            <PasswordField
-              value={master}
-              onChange={setMaster}
-              placeholder={t("masterPasswordLabel")}
-              onEnter={submit}
-              autoFocus
-            />
-          </div>
-          {error && (
-            <p className="text-xs" style={{ color: "var(--danger)" }}>
-              {error}
-            </p>
-          )}
-          <div className="flex gap-2">
-            <button onClick={close} className="btn-ghost flex-1 py-2.5 text-sm">
-              {t("cancel")}
-            </button>
-            <button
-              onClick={submit}
-              disabled={!master || busy}
-              className="btn-primary flex-1 py-2.5 text-sm"
-              style={{ background: "var(--danger)", boxShadow: "none" }}
-            >
-              {busy ? t("working") : t("decoyRemove")}
-            </button>
-          </div>
-        </>
-      )}
-    </ActionModal>
-  );
-}
-
-/* ================================================================== */
-/* Аппаратный ключ (флешка): включение и отключение                    */
-/* ================================================================== */
-
-function HwKeyEnableModal({
-  isOpen,
-  onClose,
-  onChanged,
-}: {
-  isOpen: boolean;
-  onClose: () => void;
-  onChanged: (enabled: boolean) => void;
-}) {
-  const { t } = useI18n();
-  const enableHwKey = useAppStore((s) => s.enableHwKey);
-
-  const [master, setMaster] = useState("");
-  const [decoy, setDecoy] = useState("");
-  const [directory, setDirectory] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [keyfilePath, setKeyfilePath] = useState<string | null>(null);
-
-  const reset = () => {
-    setMaster("");
-    setDecoy("");
-    setDirectory("");
-    setBusy(false);
-    setError(null);
-    setKeyfilePath(null);
-  };
-  const close = () => {
-    reset();
-    onClose();
-  };
-
-  const pickFolder = async () => {
-    try {
-      const dir = await open({ directory: true, multiple: false });
-      if (typeof dir === "string") setDirectory(dir);
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
-  const submit = async () => {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const path = await enableHwKey(master, directory, decoy || undefined);
-      setKeyfilePath(path);
-      onChanged(true);
-    } catch (e) {
-      const msg = String(e);
-      setError(
-        msg.includes("hw_key_already_enabled")
-          ? t("hwKeyStatusOn")
-          : msg.includes("wrong_password")
-          ? t("wrongCurrentPassword")
-          : msg
-      );
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const canSubmit = master.length > 0 && directory.length > 0 && !busy;
-
-  if (!isOpen) return null;
-
-  return (
-    <ActionModal
-      title={t("hwKeyEnableTitle")}
-      icon={
-        <div className="icon-badge neutral w-9 h-9">
-          <Usb className="w-4 h-4" />
-        </div>
-      }
-      onClose={close}
-    >
-      {keyfilePath ? (
-        <>
-          <div
-            className="flex items-start gap-2 text-sm"
-            style={{ color: "var(--accent)" }}
-          >
-            <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" />
-            <span className="break-all">
-              {t("hwKeyEnableSuccess")} {keyfilePath}
-            </span>
-          </div>
-          <button onClick={close} className="btn-primary w-full py-2.5 text-sm">
-            {t("close")}
-          </button>
-        </>
-      ) : (
-        <>
-          <p className="text-sm t2">{t("hwKeyEnableDesc")}</p>
-          <div>
-            <FieldLabel>{t("masterPasswordLabel")}</FieldLabel>
-            <PasswordField
-              value={master}
-              onChange={setMaster}
-              placeholder={t("masterPasswordLabel")}
-              autoFocus
-            />
-          </div>
-          <div>
-            <FieldLabel>{t("hwKeyDecoyLabel")}</FieldLabel>
-            <PasswordField
-              value={decoy}
-              onChange={setDecoy}
-              placeholder={t("decoyPasswordLabel")}
-            />
-          </div>
-          <div>
-            <FieldLabel>{t("hwKeyPickFolder")}</FieldLabel>
-            <div className="flex items-center gap-2">
-              <input
-                type="text"
-                value={directory}
-                readOnly
-                placeholder="E:\\"
-                className="field flex-1 rounded-xl px-3.5 py-2.5 text-sm font-mono"
-              />
-              <button onClick={pickFolder} className="icon-btn" title={t("hwKeyPickFolder")}>
-                <Folder className="w-4 h-4" />
-              </button>
-            </div>
-          </div>
-          {error && (
-            <p className="text-xs" style={{ color: "var(--danger)" }}>
-              {error}
-            </p>
-          )}
-          <div className="flex gap-2">
-            <button onClick={close} className="btn-ghost flex-1 py-2.5 text-sm">
-              {t("cancel")}
-            </button>
-            <button
-              onClick={submit}
-              disabled={!canSubmit}
-              className="btn-primary flex-1 py-2.5 text-sm"
-            >
-              {busy ? t("working") : t("hwKeyEnable")}
-            </button>
-          </div>
-        </>
-      )}
-    </ActionModal>
-  );
-}
-
-function HwKeyDisableModal({
-  isOpen,
-  onClose,
-  onChanged,
-}: {
-  isOpen: boolean;
-  onClose: () => void;
-  onChanged: (enabled: boolean) => void;
-}) {
-  const { t } = useI18n();
-  const disableHwKey = useAppStore((s) => s.disableHwKey);
-
-  const [master, setMaster] = useState("");
-  const [decoy, setDecoy] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [done, setDone] = useState(false);
-
-  const reset = () => {
-    setMaster("");
-    setDecoy("");
-    setBusy(false);
-    setError(null);
-    setDone(false);
-  };
-  const close = () => {
-    reset();
-    onClose();
-  };
-
-  const submit = async () => {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await disableHwKey(master, decoy || undefined);
-      setDone(true);
-      onChanged(false);
-    } catch (e) {
-      const msg = String(e);
-      setError(
-        msg.includes("hw_key_not_found")
-          ? t("hwKeyNotFound")
-          : msg.includes("wrong_password")
-          ? t("wrongCurrentPassword")
-          : msg
-      );
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  if (!isOpen) return null;
-
-  return (
-    <ActionModal
-      title={t("hwKeyDisableTitle")}
-      icon={
-        <div className="icon-badge neutral w-9 h-9">
-          <Usb className="w-4 h-4" />
-        </div>
-      }
-      onClose={close}
-    >
-      {done ? (
-        <>
-          <div
-            className="flex items-center gap-2 text-sm"
-            style={{ color: "var(--accent)" }}
-          >
-            <CheckCircle2 className="w-4 h-4 shrink-0" />
-            {t("hwKeyDisableSuccess")}
-          </div>
-          <button onClick={close} className="btn-primary w-full py-2.5 text-sm">
-            {t("close")}
-          </button>
-        </>
-      ) : (
-        <>
-          <p className="text-sm t2">{t("hwKeyDisableDesc")}</p>
-          <div>
-            <FieldLabel>{t("masterPasswordLabel")}</FieldLabel>
-            <PasswordField
-              value={master}
-              onChange={setMaster}
-              placeholder={t("masterPasswordLabel")}
-              autoFocus
-            />
-          </div>
-          <div>
-            <FieldLabel>{t("hwKeyDecoyLabel")}</FieldLabel>
-            <PasswordField
-              value={decoy}
-              onChange={setDecoy}
-              placeholder={t("decoyPasswordLabel")}
-              onEnter={submit}
-            />
-          </div>
-          {error && (
-            <p className="text-xs" style={{ color: "var(--danger)" }}>
-              {error}
-            </p>
-          )}
-          <div className="flex gap-2">
-            <button onClick={close} className="btn-ghost flex-1 py-2.5 text-sm">
-              {t("cancel")}
-            </button>
-            <button
-              onClick={submit}
-              disabled={!master || busy}
-              className="btn-primary flex-1 py-2.5 text-sm"
-              style={{ background: "var(--danger)", boxShadow: "none" }}
-            >
-              {busy ? t("working") : t("hwKeyDisable")}
-            </button>
-          </div>
-        </>
-      )}
-    </ActionModal>
-  );
-}
-
-/* ================================================================== */
-
-function Toggle({
-  label,
-  checked,
-  onChange,
-  disabled = false,
-  soon,
-  icon,
-}: {
-  label: string;
-  checked: boolean;
-  onChange: (v: boolean) => void;
-  disabled?: boolean;
-  soon?: string;
-  icon?: React.ReactNode;
-}) {
-  return (
-    <div
-      className={`flex items-center justify-between ${disabled ? "opacity-60" : "cursor-pointer"}`}
-      onClick={() => !disabled && onChange(!checked)}
-    >
-      <span className="text-sm t1 flex items-center gap-2">
-        {icon}
-        {label}
-      </span>
-      <span className="flex items-center gap-2">
-        {soon && <span className="soon-badge">{soon}</span>}
-        <div className={`toggle-track ${checked ? "on" : ""} ${disabled ? "disabled" : ""}`}>
-          <motion.div
-            animate={{ x: checked ? 20 : 2 }}
-            transition={{ type: "spring", stiffness: 300, damping: 20 }}
-            className="toggle-thumb"
-          />
-        </div>
-      </span>
-    </div>
   );
 }

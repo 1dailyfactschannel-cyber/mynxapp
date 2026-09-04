@@ -167,6 +167,70 @@ pub fn open_vault(
     Ok(session)
 }
 
+/// SECURITY: KDF-миграция при unlock. Если у открытого vault параметры
+/// слабее текущего `KdfParams::default()` (например, файл создан на старой
+/// версии с 16 MB / 3 iter), после успешной проверки пароля перешифровываем
+/// заголовок со свежей солью и актуальными параметрами.
+///
+/// Это НЕ меняет мастер-пароль — только salt и Argon2-параметры.
+/// Заголовок расшифровывается старым ключом, шифруется заново
+/// производным от нового KDF; payload остаётся нетронутым (его ключ
+/// лежит внутри зашифрованного inner header и не зависит от KDF).
+///
+/// Возвращает `Ok(true)` если миграция выполнена (вызывающий должен
+/// атомарно записать vault на диск), `Ok(false)` если параметры уже
+/// актуальны.
+pub fn migrate_kdf_if_needed(
+    vault: &mut VaultFile,
+    master_password: &str,
+    device_key: &[u8; 16],
+    hw_key: Option<&[u8; 32]>,
+) -> Result<bool> {
+    let current: KdfParamsSerializable = (&KdfParams::default()).into();
+    let stored: KdfParamsSerializable = vault.header.kdf_params.clone();
+    if stored.memory_kb >= current.memory_kb
+        && stored.iterations >= current.iterations
+        && stored.parallelism >= current.parallelism
+    {
+        return Ok(false); // уже актуальные (>=) — миграция не нужна
+    }
+
+    // Перешифруем с новой солью и новыми параметрами.
+    let new_salt = CryptoModule::generate_salt()?;
+    let new_params = KdfParams::default();
+    let new_primary = derive_key(master_password.as_bytes(), &new_salt, &new_params)?;
+    let new_enc = derive_encryption_key_hw(
+        &new_primary,
+        device_key,
+        hw_key,
+        b"safepass-v1-enc-key",
+    )?;
+
+    // Расшифровываем inner header старым ключом (уже проверенным паролем).
+    let old_session = open_vault(vault, master_password, device_key, hw_key)?;
+    let decrypted = x_decrypt_v2_or_legacy(
+        &old_session.encryption_key,
+        &vault.header.encrypted_header,
+        AAD_HEADER_V2,
+    )?;
+    let mut inner: VaultInnerHeader = serde_json::from_slice(&decrypted)?;
+    inner.modified_at = chrono::Utc::now().timestamp();
+
+    vault.header.encrypted_header =
+        XChaCha20Aead::encrypt_with_aad(&new_enc, &serde_json::to_vec(&inner)?, AAD_HEADER_V2)?;
+    vault.header.salt = new_salt;
+    vault.header.kdf_params = KdfParamsSerializable::from(&new_params);
+
+    // Ложный слот: при наличии известного decoy-пароля перепривязываем
+    // под новый KDF; иначе сбрасываем в "спящий". У нас нет decoy-пароля
+    // в этом контексте — консервативно ставим "спящий" слот.
+    let (slot, payload) = build_dormant_decoy()?;
+    vault.header.decoy = Some(slot);
+    vault.decoy_payload = Some(payload);
+
+    Ok(true)
+}
+
 /// Try to open the decoy slot with the given password.
 fn open_decoy(
     vault: &VaultFile,
@@ -464,7 +528,32 @@ pub fn read_hw_keyfile(
 
 /// Поиск keyfile по всем дискам: корень каждой буквы + подпапка mynx-keys.
 /// Буква флешки может меняться между подключениями, поэтому сканируем все.
+///
+/// SECURITY: каждое `is_file()` на отсутствующем/сетевом диске может
+/// блокироваться на десятки мс (autorun, AV-скан, сетевой таймаут).
+/// 26 букв × 2 пути = 52 синхронных syscall'а. На медленных носителях
+/// или заблокированных шарах это легко превращается в секунды ожидания
+/// в UI-потоке. Обёртка в `spawn_blocking` + общий таймаут (по умолчанию
+/// 3 с) гарантирует, что медленный носитель не подвесит разблокировку.
 pub fn find_hw_keyfile(expected_id: &str) -> Result<std::path::PathBuf> {
+    find_hw_keyfile_with_timeout(expected_id, std::time::Duration::from_secs(3))
+}
+
+pub fn find_hw_keyfile_with_timeout(
+    expected_id: &str,
+    timeout: std::time::Duration,
+) -> Result<std::path::PathBuf> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let id = expected_id.to_string();
+    std::thread::spawn(move || {
+        let result = scan_all_drives(&id);
+        let _ = tx.send(result);
+    });
+    rx.recv_timeout(timeout)
+        .unwrap_or(Err(anyhow::anyhow!("hw_key_scan_timeout")))
+}
+
+fn scan_all_drives(expected_id: &str) -> Result<std::path::PathBuf> {
     let name = format!("mynx-hwkey-{}.key", expected_id);
     for letter in b'A'..=b'Z' {
         let root = std::path::PathBuf::from(format!("{}:\\", letter as char));
@@ -562,7 +651,7 @@ pub fn disable_hw_key_with_secret(
 }
 
 /// Update decoy inner header (entry_count, modified_at), re-encrypting it
-/// with the decoy encryption key.
+/// with the decoy encryption key. Saturate на разумный предел.
 pub fn update_decoy_inner_header(
     vault: &mut VaultFile,
     enc_key: &[u8; 32],
@@ -575,7 +664,7 @@ pub fn update_decoy_inner_header(
         .ok_or_else(|| anyhow::anyhow!("no decoy slot"))?;
     let decrypted = x_decrypt_v2_or_legacy(enc_key, &slot.encrypted_header, AAD_DECOY_HEADER_V2)?;
     let mut inner: VaultInnerHeader = serde_json::from_slice(&decrypted)?;
-    inner.entry_count = entry_count;
+    inner.entry_count = entry_count.min(MAX_REASONABLE_ENTRIES);
     inner.modified_at = chrono::Utc::now().timestamp();
     slot.encrypted_header =
         XChaCha20Aead::encrypt_with_aad(enc_key, &serde_json::to_vec(&inner)?, AAD_DECOY_HEADER_V2)?;
@@ -769,6 +858,11 @@ pub fn encrypt_entries(payload_key: &[u8; 32], entries_json: &str) -> Result<Vec
 
 /// Update inner header fields (entry_count, modified_at), re-encrypting it
 /// with the vault encryption key.
+///
+/// SECURITY: entry_count приходит из пользовательского ввода через save_entries
+/// (или из подделанного vault-файла при наличии master-пароля). Saturate на
+/// разумный предел: больше 1 млн записей — мусор, и UI не должен резервировать
+/// под это массивы при чтении заголовка.
 pub fn update_inner_header(
     vault: &mut VaultFile,
     enc_key: &[u8; 32],
@@ -776,12 +870,17 @@ pub fn update_inner_header(
 ) -> Result<()> {
     let decrypted = x_decrypt_v2_or_legacy(enc_key, &vault.header.encrypted_header, AAD_HEADER_V2)?;
     let mut inner: VaultInnerHeader = serde_json::from_slice(&decrypted)?;
-    inner.entry_count = entry_count;
+    inner.entry_count = entry_count.min(MAX_REASONABLE_ENTRIES);
     inner.modified_at = chrono::Utc::now().timestamp();
     vault.header.encrypted_header =
         XChaCha20Aead::encrypt_with_aad(enc_key, &serde_json::to_vec(&inner)?, AAD_HEADER_V2)?;
     Ok(())
 }
+
+/// Верхняя граница для entry_count: 1 млн — заведомо больше, чем любой
+/// реальный кейс, и достаточно мало, чтобы UI не ушёл в OOM при попытке
+/// отрендерить счётчик/прогресс.
+pub const MAX_REASONABLE_ENTRIES: u32 = 1_000_000;
 
 /// Старые vault-файлы без ложного слота догоняем до текущего формата:
 /// прикрепляем "спящий" слот при первом сохранении.

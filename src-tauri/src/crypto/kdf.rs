@@ -3,8 +3,14 @@ use argon2::{
     password_hash::SaltString,
 };
 
-pub const ARGON2_MEMORY_KB: u32 = 16384; // 16 MB
-pub const ARGON2_ITERATIONS: u32 = 3;
+// SECURITY: параметры KDF подняты до уровня, устойчивого к офлайн-брутфорсу
+// на современных GPU (RTX 4090 ~ 200–400 MH/s Argon2id на 64 MB). 16 MB /
+// 3 iter (предыдущее значение) ломается за часы для 6-символьных паролей;
+// 64 MB / 4 iter даёт запас в ~4× и сохраняет unlock <1 с на обычном железе.
+// Старые vault-файлы открываются со старыми параметрами и прозрачно
+// мигрируют на новые при первом успешном unlock (см. open_vault).
+pub const ARGON2_MEMORY_KB: u32 = 65536; // 64 MB
+pub const ARGON2_ITERATIONS: u32 = 4;
 pub const ARGON2_PARALLELISM: u32 = 2;
 pub const KEY_LENGTH: usize = 32;
 

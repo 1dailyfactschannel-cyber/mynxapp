@@ -5,6 +5,7 @@
 #![allow(dependency_on_unit_never_type_fallback)]
 
 mod crypto;
+mod error;
 mod vault;
 #[cfg(target_os = "windows")]
 mod auto_type;
@@ -36,7 +37,7 @@ use commands::{
     vault_hw_key_status, vault_decoy_status, vault_enable_hw_key, vault_disable_hw_key,
     secure_copy, secure_paste, secure_copy_available,
     get_api_token, get_device_key, set_lock_on_hide, set_app_language, rotate_api_token,
-    set_autolock_minutes, set_ipc_backup_prefs, AppState,
+    set_autolock_minutes, set_ipc_backup_prefs, revoke_ipc_pair, AppState,
 };
 use clipboard::{clipboard_history_set_enabled, clipboard_set_secure};
 use favicon::fetch_favicon;
@@ -45,11 +46,6 @@ use biometry::{
     biometry_disable, biometry_enable, biometry_is_available, biometry_is_enabled,
     vault_unlock_biometry,
 };
-
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn main() {
@@ -172,7 +168,6 @@ pub fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            greet,
             vault_create,
             vault_unlock,
             vault_lock,
@@ -202,6 +197,7 @@ pub fn main() {
             get_device_key,
             set_lock_on_hide,
             set_autolock_minutes,
+            revoke_ipc_pair,
             set_app_language,
             auto_type_credentials,
             auto_type_text,

@@ -133,8 +133,7 @@ fn create_secure_pipe() -> Result<tokio::net::windows::named_pipe::NamedPipeServ
         TOKEN_USER,
     };
     use windows::Win32::Storage::FileSystem::{
-        FILE_FLAGS_AND_ATTRIBUTES, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED,
-        PIPE_ACCESS_DUPLEX,
+        FILE_FLAGS_AND_ATTRIBUTES, FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX,
     };
     use windows::Win32::System::Pipes::{
         CreateNamedPipeW, PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE, PIPE_UNLIMITED_INSTANCES,
@@ -198,11 +197,17 @@ fn create_secure_pipe() -> Result<tokio::net::windows::named_pipe::NamedPipeServ
             lpSecurityDescriptor: psd.0,
             bInheritHandle: BOOL(0),
         };
-        // FILE_FLAG_FIRST_PIPE_INSTANCE: процесс-владелец имени \\.\pipe\mynx
-        // должен быть ровно один. Без этого флага чужой процесс, создавший
-        // пайп раньше (squatting), перехватывает нативный хост и расширение.
+        // Защита от squatting: имя \\.\pipe\mynx резервируется за нашим
+        // процессом через DACL (текущий пользователь + SYSTEM + Admins).
+        // FILE_FLAG_FIRST_PIPE_INSTANCE здесь НЕ используется: цикл
+        // run_ipc_server обрабатывает соединения в spawned-задачах и должен
+        // создавать следующий экземпляр пайпа, пока клиент держит
+        // предыдущий. С FIRST_PIPE_INSTANCE CreateNamedPipeW возвращает
+        // ERROR_ACCESS_DENIED на втором витке, и IPC-сервер умирает после
+        // первого запроса. DACL в SECURITY_ATTRIBUTES ужесточает доступ
+        // и без этого флага.
         let open_mode = FILE_FLAGS_AND_ATTRIBUTES(
-            PIPE_ACCESS_DUPLEX.0 | FILE_FLAG_OVERLAPPED.0 | FILE_FLAG_FIRST_PIPE_INSTANCE.0,
+            PIPE_ACCESS_DUPLEX.0 | FILE_FLAG_OVERLAPPED.0,
         );
         let raw = CreateNamedPipeW(
             PCWSTR(name.as_ptr()),

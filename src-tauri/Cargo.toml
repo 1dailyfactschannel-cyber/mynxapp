@@ -10,6 +10,7 @@ default-run = "mynx"
 
 [build-dependencies]
 tauri-build = { version = "2.0.0", features = [] }
+serde_json = "1.0"
 
 [dependencies]
 tauri = { version = "2.0.0", features = ["tray-icon"] }
@@ -57,4 +58,13 @@ custom-protocol = ["tauri/custom-protocol"]
 
 [profile.dev]
 opt-level = 1
+
+# Defense in depth: при panic в release немедленно завершаем процесс через abort,
+# чтобы Windows Error Reporting не успел снять crash-dump с чувствительными
+# ключами в памяти. memprotect::init() дополнительно ставит SetErrorMode
+# и SetUnhandledExceptionFilter → TerminateProcess, но на самых ранних panic'ах
+# (до регистрации фильтра) WER всё ещё может вмешаться — `panic = abort"`
+# дешевле и гарантированно.
+[profile.release]
+panic = "abort"
 

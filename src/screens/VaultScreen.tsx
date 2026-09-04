@@ -2,7 +2,6 @@ import { useState, useMemo, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Lock, Dice5, Settings as SettingsIcon, Command, HeartPulse, Clock, GraduationCap, RotateCcw, Trash2 } from "lucide-react";
 import { GlassCard } from "@/components/GlassCard";
-import type { ShortcutEvent } from "@tauri-apps/plugin-global-shortcut";
 import { Sidebar } from "@/components/Sidebar";
 import { EntryCard } from "@/components/EntryCard";
 import { EntryDetail } from "@/components/EntryDetail";
@@ -16,13 +15,24 @@ import { AttachmentsView } from "@/components/AttachmentsView";
 import { PasskeysView } from "@/components/PasskeysView";
 import { EmptyState } from "@/components/EmptyState";
 import { AutoTypePicker } from "@/components/AutoTypePicker";
-import { matchEntries } from "@/lib/autotype";
 import { useAppStore, isTauri } from "@/stores/app";
 import { useAutoLock } from "@/hooks/useAutoLock";
+import { useGlobalShortcuts } from "@/hooks/useGlobalShortcuts";
+import { useModalStack } from "@/hooks/useModalStack";
 import { useVaultStore, type Entry } from "@/stores/vault";
 import { useSettingsStore } from "@/stores/settings";
 import { useClipboardStore } from "@/stores/clipboard";
 import { useI18n } from "@/i18n";
+
+type ModalKey =
+  | "generator"
+  | "settings"
+  | "quickAdd"
+  | "commandPalette"
+  | "health"
+  | "tutorial"
+  | "attachments"
+  | "passkeys";
 
 export function VaultScreen() {
   const lock = useAppStore((s) => s.lock);
@@ -44,16 +54,17 @@ export function VaultScreen() {
   const clipActive = useClipboardStore((s) => s.isActive);
   const clipboardCopy = useClipboardStore((s) => s.copy);
 
+  /** Панель деталей — отдельный флаг, потому что связан с selectedEntry. */
   const [detailOpen, setDetailOpen] = useState(false);
-  const [generatorOpen, setGeneratorOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [quickAddOpen, setQuickAddOpen] = useState(false);
-  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
-  const [healthOpen, setHealthOpen] = useState(false);
-  const [tutorialOpen, setTutorialOpen] = useState(false);
-  const [attachmentsOpen, setAttachmentsOpen] = useState(false);
-  const [passkeysOpen, setPasskeysOpen] = useState(false);
-  const [autoTypePick, setAutoTypePick] = useState<{ windowTitle: string; matches: Entry[] } | null>(null);
+
+  /** Стек модалок: один активный элемент, конфликты видимости невозможны. */
+  const modal = useModalStack<ModalKey>();
+
+  /** AutoTypePicker с payload (несколько совпадений). */
+  const [autoTypePick, setAutoTypePick] = useState<{
+    windowTitle: string;
+    matches: Entry[];
+  } | null>(null);
 
   const { t } = useI18n();
 
@@ -70,142 +81,23 @@ export function VaultScreen() {
   const hotkeySecurePaste = useSettingsStore((s) => s.hotkeySecurePaste);
   const hotkeysEpoch = useSettingsStore((s) => s.hotkeysEpoch);
 
-  // Глобальные шорткаты — только внутри Tauri; перерегистрация при смене
-  // сочетаний в настройках (hotkeysEpoch форсирует откат после конфликта)
+  // Глобальные шорткаты — регистрация/снятие инкапсулированы в useGlobalShortcuts.
+  // Прокидываем коллбэки на конкретные действия VaultScreen (открыть модалку и т.д.).
+  useGlobalShortcuts({
+    hotkeyQuickAdd,
+    hotkeyAutoType,
+    hotkeyGenerator,
+    hotkeyLock,
+    hotkeySecurePaste,
+    toggleQuickAdd: () => modal.toggle("quickAdd"),
+    openGenerator: () => modal.open("generator"),
+    lock,
+  });
+
+  // hotkeysEpoch: форсирует перерегистрацию хоткеев (см. Settings — при конфликте)
   useEffect(() => {
-    if (!isTauri) return;
-
-    let cancelled = false;
-    const shortcuts: string[] = [];
-
-    const registerShortcuts = async () => {
-      const { register, unregister } = await import("@tauri-apps/plugin-global-shortcut");
-
-      // Каждое сочетание — независимо: конфликт одного не роняет второе
-      const tryRegister = async (accelerator: string, handler: (event: ShortcutEvent) => void) => {
-        try {
-          await register(accelerator, handler);
-          shortcuts.push(accelerator);
-        } catch (e) {
-          console.error(`Failed to register global shortcut ${accelerator}:`, e);
-        }
-      };
-
-      await tryRegister(hotkeyQuickAdd, (event) => {
-        if (event.state !== "Pressed") return;
-        // Сначала показать окно (может быть свёрнуто в трей), потом Quick Add
-        import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
-          const win = getCurrentWindow();
-          void win
-            .show()
-            .then(() => win.unminimize())
-            .then(() => win.setFocus())
-            .catch(() => {});
-        });
-        setQuickAddOpen((prev) => !prev);
-      });
-
-      await tryRegister(hotkeyAutoType, (event) => {
-        if (event.state !== "Pressed") return;
-
-        // Старое поведение: печать выбранной в списке записи
-        const typeSelected = () => {
-          const currentEntry = useVaultStore.getState().selectedEntry;
-          if (!currentEntry) {
-            console.warn("Auto-type: no entry selected");
-            return;
-          }
-          const entry = useVaultStore.getState().entries.find((e) => e.id === currentEntry);
-          if (entry) {
-            import("@tauri-apps/api/core").then(({ invoke }) => {
-              invoke("auto_type_credentials", {
-                username: entry.username,
-                password: entry.password,
-              }).catch(console.error);
-            });
-          } else {
-            console.warn("Auto-type: selected entry not found");
-          }
-        };
-
-        void (async () => {
-          const { invoke } = await import("@tauri-apps/api/core");
-          const { getCurrentWindow } = await import("@tauri-apps/api/window");
-          const win = getCurrentWindow();
-
-          // Хранилище закрыто — просто показываем окно для разблокировки
-          if (!useAppStore.getState().isUnlocked) {
-            void win.show().then(() => win.unminimize()).then(() => win.setFocus()).catch(() => {});
-            return;
-          }
-
-          const fg = await invoke<{ title: string; is_self: boolean }>("get_foreground_window");
-
-          // Фокус на самом Mynx или заголовок не получен — печатаем выбранную запись
-          if (fg.is_self || !fg.title) {
-            typeSelected();
-            return;
-          }
-
-          const matches = matchEntries(useVaultStore.getState().entries, fg.title);
-          if (matches.length === 1) {
-            // Единственное совпадение — скрываем окно и печатаем сразу
-            const entry = matches[0];
-            await win.hide();
-            invoke("auto_type_credentials", {
-              username: entry.username,
-              password: entry.password,
-            }).catch(console.error);
-          } else {
-            // 0 или несколько совпадений — показываем окно с пикером
-            void win.show().then(() => win.unminimize()).then(() => win.setFocus()).catch(() => {});
-            setAutoTypePick({ windowTitle: fg.title, matches });
-          }
-        })().catch((e) => console.error("Auto-type failed:", e));
-      });
-
-      await tryRegister(hotkeyGenerator, (event) => {
-        if (event.state !== "Pressed") return;
-        import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
-          const win = getCurrentWindow();
-          void win
-            .show()
-            .then(() => win.unminimize())
-            .then(() => win.setFocus())
-            .catch(() => {});
-        });
-        setGeneratorOpen(true);
-      });
-
-      await tryRegister(hotkeyLock, (event) => {
-        if (event.state !== "Pressed") return;
-        lock();
-      });
-
-      // Вставка из защищённого буфера (слепое копирование)
-      await tryRegister(hotkeySecurePaste, (event) => {
-        if (event.state !== "Pressed") return;
-        import("@tauri-apps/api/core").then(({ invoke }) => {
-          invoke("secure_paste").catch((e) => {
-            if (!String(e).includes("secure_buffer_empty")) console.error(e);
-          });
-        });
-      });
-
-      if (cancelled) {
-        for (const s of shortcuts) await unregister(s).catch(() => {});
-      }
-    };
-
-    registerShortcuts().catch((e) => console.error("Failed to register global shortcuts:", e));
-
-    return () => {
-      cancelled = true;
-      import("@tauri-apps/plugin-global-shortcut")
-        .then(({ unregister }) => shortcuts.forEach((s) => unregister(s).catch(() => {})))
-        .catch(() => {});
-    };
-  }, [hotkeyQuickAdd, hotkeyAutoType, hotkeyGenerator, hotkeyLock, hotkeySecurePaste, hotkeysEpoch, lock]);
+    /* no-op: deps в useGlobalShortcuts включают epoch, ре-эффект пройдёт сам */
+  }, [hotkeysEpoch]);
 
   // Ctrl+K — локальный во всех режимах (глобальный перехват крадёт
   // сочетание у других приложений). Ctrl+Shift+A локально — только
@@ -214,15 +106,29 @@ export function VaultScreen() {
     const handler = (e: KeyboardEvent) => {
       if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === "k") {
         e.preventDefault();
-        setCommandPaletteOpen((prev) => !prev);
+        modal.toggle("commandPalette");
       }
       if (!isTauri && e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "a") {
         e.preventDefault();
-        setQuickAddOpen((prev) => !prev);
+        modal.toggle("quickAdd");
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
+  }, [modal]);
+
+  // Событие от useGlobalShortcuts: при нескольких совпадениях AutoType
+  // нужно показать picker.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail as {
+        windowTitle: string;
+        matches: Entry[];
+      };
+      setAutoTypePick(detail);
+    };
+    window.addEventListener("mynx:auto-type-pick", handler);
+    return () => window.removeEventListener("mynx:auto-type-pick", handler);
   }, []);
 
   const selectedEntry = useMemo(
@@ -317,9 +223,9 @@ export function VaultScreen() {
         selectedCategory={selectedCategory}
         onSelectCategory={(id) => {
           if (id === "Attachments") {
-            setAttachmentsOpen(true);
+            modal.open("attachments");
           } else if (id === "Passkeys") {
-            setPasskeysOpen(true);
+            modal.open("passkeys");
           } else {
             setSelectedCategory(id);
           }
@@ -327,7 +233,7 @@ export function VaultScreen() {
         onSearch={setSearchQuery}
         searchQuery={searchQuery}
         entries={entries}
-        onNewEntry={() => setQuickAddOpen(true)}
+        onNewEntry={() => modal.open("quickAdd")}
       />
 
       <div className="flex-1 flex flex-col h-screen overflow-hidden">
@@ -351,7 +257,7 @@ export function VaultScreen() {
             <motion.button
               whileHover={{ scale: 1.04 }}
               whileTap={{ scale: 0.96 }}
-              onClick={() => setCommandPaletteOpen(true)}
+              onClick={() => modal.open("commandPalette")}
               className="btn-ghost px-3 py-1.5 text-sm"
             >
               <Command className="w-4 h-4" />
@@ -381,7 +287,7 @@ export function VaultScreen() {
             )}
 
             <button
-              onClick={() => setTutorialOpen(true)}
+              onClick={() => modal.open("tutorial")}
               className="icon-btn"
               type="button"
               title={t("tutOpen")}
@@ -390,7 +296,7 @@ export function VaultScreen() {
             </button>
 
             <button
-              onClick={() => setHealthOpen(true)}
+              onClick={() => modal.open("health")}
               className="icon-btn"
               type="button"
               title={t("healthOpen")}
@@ -399,7 +305,7 @@ export function VaultScreen() {
             </button>
 
             <button
-              onClick={() => setSettingsOpen(true)}
+              onClick={() => modal.open("settings")}
               className="icon-btn"
               type="button"
               title={t("settings")}
@@ -410,7 +316,7 @@ export function VaultScreen() {
             <motion.button
               whileHover={{ scale: 1.04 }}
               whileTap={{ scale: 0.96 }}
-              onClick={() => setGeneratorOpen(true)}
+              onClick={() => modal.open("generator")}
               className="btn-ghost px-3 py-1.5 text-sm"
             >
               <Dice5 className="w-4 h-4" />
@@ -456,7 +362,7 @@ export function VaultScreen() {
                 hint={searchQuery ? t("tryDifferent") : t("emptyCategoryHint")}
                 action={
                   !searchQuery && selectedCategory !== "Trash" ? (
-                    <button onClick={() => setQuickAddOpen(true)} className="btn-primary px-4 py-2 text-sm">
+                    <button onClick={() => modal.open("quickAdd")} className="btn-primary px-4 py-2 text-sm">
                       {t("newEntry")}
                     </button>
                   ) : undefined
@@ -507,35 +413,28 @@ export function VaultScreen() {
           onCopy={handleCopyPassword}
         />
 
-        <PasswordGenerator isOpen={generatorOpen} onClose={() => setGeneratorOpen(false)} />
-
-        <Settings
-          isOpen={settingsOpen}
-          onClose={() => setSettingsOpen(false)}
-        />
-
-        <QuickAdd isOpen={quickAddOpen} onClose={() => setQuickAddOpen(false)} />
+        <PasswordGenerator isOpen={modal.isOpen("generator")} onClose={modal.close} />
+        <Settings isOpen={modal.isOpen("settings")} onClose={modal.close} />
+        <QuickAdd isOpen={modal.isOpen("quickAdd")} onClose={modal.close} />
 
         <CommandPalette
-          isOpen={commandPaletteOpen}
-          onClose={() => setCommandPaletteOpen(false)}
-          onOpenGenerator={() => setGeneratorOpen(true)}
-          onOpenSettings={() => setSettingsOpen(true)}
-          onOpenQuickAdd={() => setQuickAddOpen(true)}
+          isOpen={modal.isOpen("commandPalette")}
+          onClose={modal.close}
+          onOpenGenerator={() => modal.open("generator")}
+          onOpenSettings={() => modal.open("settings")}
+          onOpenQuickAdd={() => modal.open("quickAdd")}
           onSelectEntry={handleSelectEntry}
         />
 
         <HealthDashboard
-          isOpen={healthOpen}
-          onClose={() => setHealthOpen(false)}
+          isOpen={modal.isOpen("health")}
+          onClose={modal.close}
           onSelectEntry={handleSelectEntry}
         />
 
-        <Tutorial isOpen={tutorialOpen} onClose={() => setTutorialOpen(false)} />
-
-        <AttachmentsView isOpen={attachmentsOpen} onClose={() => setAttachmentsOpen(false)} />
-
-        <PasskeysView isOpen={passkeysOpen} onClose={() => setPasskeysOpen(false)} />
+        <Tutorial isOpen={modal.isOpen("tutorial")} onClose={modal.close} />
+        <AttachmentsView isOpen={modal.isOpen("attachments")} onClose={modal.close} />
+        <PasskeysView isOpen={modal.isOpen("passkeys")} onClose={modal.close} />
 
         {autoTypePick && (
           <AutoTypePicker

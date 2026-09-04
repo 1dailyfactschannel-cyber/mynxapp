@@ -6,6 +6,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useAppStore, isTauri } from "@/stores/app";
 import { useSettingsStore } from "@/stores/settings";
 import { useI18n } from "@/i18n";
+import { isHwKeyInvalid, isHwKeyNotFound, isTooManyAttempts, isVaultLocked, isWrongPassword, parseError, userMessage } from "@/lib/errors";
 
 export function LockScreen() {
   const [password, setPassword] = useState("");
@@ -91,17 +92,20 @@ export function LockScreen() {
       await unlock(activeVault, password, keyfilePath || undefined);
     } catch (e: any) {
       setError(true);
-      const raw = String(e?.message ?? e ?? "");
-      const notFound = raw.includes("hw_key_not_found");
+      const err = parseError(e);
+      const notFound = isHwKeyNotFound(e);
       setKeyfileNeeded(notFound);
+      // Порядок важен: специфичные ошибки сначала.
       setErrorMsg(
-        notFound
+        isTooManyAttempts(e)
+          ? `Too many attempts. Retry in ${err.retryAfter ?? 30}s`
+          : notFound
           ? t("hwKeyNotFound")
-          : raw.includes("hw_key_invalid")
+          : isHwKeyInvalid(e)
           ? t("hwKeyInvalid")
-          : raw && raw !== "Unlock failed"
-          ? raw
-          : t("wrongPassword")
+          : isWrongPassword(e) || isVaultLocked(e)
+          ? t("wrongPassword")
+          : userMessage(e, t("wrongPassword"))
       );
       setTimeout(() => setError(false), 600);
     } finally {
