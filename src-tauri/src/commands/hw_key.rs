@@ -7,7 +7,7 @@ use crate::vault::operations::{
 };
 
 use super::app_state::AppState;
-use super::device_key::{cached_hw_secret, load_device_key, session_keys};
+use super::device_key::{load_device_key, session_keys};
 use super::types::*;
 
 /* ------------------------------------------------------------------ */

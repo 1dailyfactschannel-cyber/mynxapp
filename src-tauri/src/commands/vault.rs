@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use tauri::State;
-use zeroize::Zeroize;
+use zeroize::Zeroizing;
 
 use crate::crypto::{derive_encryption_key_hw, derive_key, CryptoModule, KdfParams, XChaCha20Aead};
 use crate::vault::operations::{

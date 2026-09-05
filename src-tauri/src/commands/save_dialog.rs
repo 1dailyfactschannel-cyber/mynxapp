@@ -27,7 +27,7 @@ pub async fn save_png_file(request: super::types::SavePngRequest) -> Result<Expo
 
 /// Native Windows "Save as" dialog. Returns None when the user cancels.
 #[cfg(target_os = "windows")]
-pub(crate) fn pick_save_path(
+pub fn pick_save_path(
     default_name: &str,
     title: &str,
     filter_label: &str,
@@ -78,7 +78,7 @@ pub(crate) fn pick_save_path(
 
 /// Non-Windows fallback: save next to the executable without a dialog.
 #[cfg(not(target_os = "windows"))]
-pub(crate) fn pick_save_path(
+pub fn pick_save_path(
     default_name: &str,
     _title: &str,
     _filter_label: &str,

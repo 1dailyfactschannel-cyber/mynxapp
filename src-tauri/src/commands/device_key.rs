@@ -12,7 +12,7 @@ use crate::vault::types::VaultSession;
 /// DACL, недоступным другим пользователям. Файл `.safepass.dk` остаётся
 /// как fallback для portable-сценариев (если keyring недоступен —
 /// например, на Linux/macOS или при сбое Credential Manager).
-pub(crate) fn load_device_key(vault_path: &Path) -> Result<[u8; 16], String> {
+pub fn load_device_key(vault_path: &Path) -> Result<[u8; 16], String> {
     // Keyring — основной путь. Имя записи привязано к абсолютному пути
     // vault-файла: один keyring-неймспейс `mynx`, аккаунт — `dk/<path-hash>`.
     if let Ok(arr) = load_device_key_from_keyring(vault_path) {
@@ -110,7 +110,7 @@ pub(crate) fn store_device_key(vault_path: &Path, dk: &[u8; 16]) {
 }
 
 /// Copy (encryption_key, payload_key, is_decoy) of the live session if it belongs to this vault
-pub(crate) fn session_keys(
+pub fn session_keys(
     state: &super::AppState,
     vault_id: &str,
 ) -> Result<([u8; 32], [u8; 32], bool), String> {
@@ -127,7 +127,7 @@ pub(crate) fn cached_hw_secret(state: &super::AppState) -> Option<[u8; 32]> {
     *state.inner.hw_key_secret.lock().unwrap()
 }
 
-pub(crate) fn count_entries(entries_json: &str) -> u32 {
+pub fn count_entries(entries_json: &str) -> u32 {
     serde_json::from_str::<serde_json::Value>(entries_json)
         .ok()
         .and_then(|v| v.as_array().map(|a| a.len() as u32))
