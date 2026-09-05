@@ -1,5 +1,4 @@
 use serde::Serialize;
-use std::fmt;
 use thiserror::Error;
 
 /// Единый тип ошибок для всех Tauri-команд и IPC-ответов.
@@ -207,13 +206,6 @@ impl CommandError {
             Self::TooManyAttempts(s) => format!("Too many attempts. Retry in {} seconds", s),
             _ => self.kind().to_string(),
         }
-    }
-}
-
-/// Display-реализация уже предоставлена thiserror.
-impl fmt::Display for CommandError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.kind())
     }
 }
 

@@ -33,12 +33,13 @@ pub mod vault;
 // Re-exports для обратной совместимости с main.rs / ipc.rs / api.rs.
 // Добавляйте новые команды в этот блок — main.rs импортирует именно
 // отсюда через `use commands::{vault_create, ...}`.
-pub use app_state::{generate_api_token_internal, AppState, AppStateInner, IpcBackupPrefs};
-pub use types::{validate_master_password, MIN_MASTER_PASSWORD_LEN};
+pub use app_state::{generate_api_token_internal, AppState, AppStateInner};
+pub use types::{validate_master_password, VaultIdRequest, VaultUnlockResponse};
 
 pub use api_token::{get_api_token, rotate_api_token};
-pub use backup::{run_vault_backup_files, set_ipc_backup_prefs, vault_backup, MAX_KEEP_COUNT};
+pub use backup::{run_vault_backup_files, set_ipc_backup_prefs, vault_backup};
 pub use decoy::{vault_decoy_status, vault_remove_decoy, vault_set_decoy_password};
+pub use device_key::{count_entries, load_device_key, session_keys};
 pub use hw_key::{vault_disable_hw_key, vault_enable_hw_key, vault_hw_key_status};
 pub use misc::revoke_ipc_pair;
 pub use save_dialog::{pick_save_path, save_png_file};

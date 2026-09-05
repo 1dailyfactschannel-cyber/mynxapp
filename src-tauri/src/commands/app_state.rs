@@ -1,6 +1,5 @@
-use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
 
 use crate::vault::types::VaultSession;
 
@@ -135,7 +134,7 @@ fn generate_api_token() -> String {
 
 /// Внутренний генератор: используется и для начального заполнения,
 /// и для ротации при смене мастер-пароля.
-pub(crate) fn generate_api_token_internal() -> String {
+pub fn generate_api_token_internal() -> String {
     let mut bytes = [0u8; 32];
     getrandom::getrandom(&mut bytes).expect("random");
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
