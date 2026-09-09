@@ -42,6 +42,10 @@ export type ErrorKind =
   | "clipboard_failed"
   // Settings / misc
   | "lock_on_hide_weakening_forbidden"
+  | "autolock_weakening_forbidden"
+  | "biometry_hw_key_forbidden"
+  | "vault_name_invalid"
+  | "vault_path_invalid"
   | "backup_path_empty"
   | "backup_failed"
   | "save_cancelled"
@@ -184,6 +188,18 @@ export function parseError(e: unknown): MynxError {
   if (raw === "lock_on_hide_weakening_forbidden") {
     return { kind: "lock_on_hide_weakening_forbidden", message: raw };
   }
+  if (raw === "autolock_weakening_forbidden") {
+    return { kind: "autolock_weakening_forbidden", message: raw };
+  }
+  if (raw === "biometry_hw_key_forbidden") {
+    return { kind: "biometry_hw_key_forbidden", message: raw };
+  }
+  if (raw === "vault_name_invalid") {
+    return { kind: "vault_name_invalid", message: raw };
+  }
+  if (raw === "vault_path_invalid") {
+    return { kind: "vault_path_invalid", message: raw };
+  }
   // …любые другие кодовые строки можно добавить сюда по мере миграции
 
   return { kind: "legacy_string", message: raw };
@@ -213,6 +229,8 @@ export const isSecureBufferEmpty = (e: unknown) =>
   parseError(e).kind === "secure_buffer_empty";
 export const isLockOnHideWeakeningForbidden = (e: unknown) =>
   parseError(e).kind === "lock_on_hide_weakening_forbidden";
+export const isBiometryHwKeyForbidden = (e: unknown) =>
+  parseError(e).kind === "biometry_hw_key_forbidden";
 export const isSaveCancelled = (e: unknown) => parseError(e).kind === "save_cancelled";
 export const isInvalidShortcut = (e: unknown) => {
   const err = parseError(e);

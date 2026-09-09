@@ -31,7 +31,7 @@
         "font-src": "'self'",
         "img-src": "'self' asset: data:",
         "connect-src": "'self'",
-        "script-src": "'self' 'unsafe-eval'"
+        "script-src": "'self'"
       },
       "capabilities": [
         {
@@ -61,7 +61,11 @@
       ]
     }
   },
-  "plugins": {},
+  "plugins": {
+    "shell": {
+      "open": "^https://[\\w\\-]+(\\.[\\w\\-]+)+(:\\d+)?([/?#].*)?$"
+    }
+  },
   "bundle": {
     "active": true,
     "targets": [

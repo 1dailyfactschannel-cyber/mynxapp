@@ -53,9 +53,9 @@ pub use vault::{
 use zeroize::Zeroize;
 
 /// Мгновенная очистка всех секретов из памяти процесса:
-/// ключи сессии затираются на месте, защищённый буфер и кэш
-/// hw-ключа — тоже. Используется при блокировке, сворачивании
-/// окна в трей и завершении приложения.
+/// ключи сессии затираются на месте, защищённый буфер, кэш
+/// hw-ключа и device key — тоже. Используется при блокировке,
+/// сворачивании окна в трей и завершении приложения.
 pub fn wipe_secrets(inner: &AppStateInner) {
     let mut session = inner.vault_session.lock().unwrap();
     if let Some(s) = session.as_mut() {
@@ -75,6 +75,12 @@ pub fn wipe_secrets(inner: &AppStateInner) {
         k.zeroize();
     }
     *hw = None;
+
+    let mut dk = inner.device_key.lock().unwrap();
+    if let Some(k) = dk.as_mut() {
+        k.zeroize();
+    }
+    *dk = None;
 }
 
 #[cfg(test)]

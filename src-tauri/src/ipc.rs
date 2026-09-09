@@ -85,19 +85,29 @@ impl IpcResponse {
 pub async fn run_ipc_server(state: Arc<AppStateInner>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use tokio::net::windows::named_pipe::{PipeMode, ServerOptions};
 
+    // Первый экземпляр — с FILE_FLAG_FIRST_PIPE_INSTANCE: если имя уже
+    // занято другим процессом (squatting), сервер обязан упасть, а не
+    // делить имя. Дальше экземпляры создаются без флага.
+    let mut first_instance = true;
     loop {
         // tokio ServerOptions не принимает SECURITY_ATTRIBUTES, а прав на
         // смену DACL готового хендла не хватает — создаём пайп сами.
-        let pipe = match create_secure_pipe() {
+        let pipe = match create_secure_pipe(first_instance) {
             Ok(p) => p,
+            Err(e) if first_instance => {
+                // Имя занято (squatting) или не применился DACL — не
+                // отдаём клиентов чужому процессу: выключаем IPC-сервер.
+                crate::log_error!("IPC: cannot claim \\\\.\\pipe\\mynx ({e}); IPC server disabled");
+                return Err(format!("IPC pipe \\\\.\\pipe\\mynx unavailable: {e}").into());
+            }
             Err(e) => {
                 crate::log_warn!("IPC secure pipe failed (default ACL): {e}");
                 ServerOptions::new()
-                    .first_pipe_instance(true)
                     .pipe_mode(PipeMode::Message)
                     .create("\\\\.\\pipe\\mynx")?
             }
         };
+        first_instance = false;
 
         // Ждём подключения клиента ДО создания следующего экземпляра pipe.
         // Без этого цикл крутится без await: плодит тысячи pipe'ов и задач
@@ -121,8 +131,9 @@ pub async fn run_ipc_server(state: Arc<AppStateInner>) -> Result<(), Box<dyn std
 /// (+ SYSTEM и админы), наследование запрещено. tokio ServerOptions не
 /// принимает SECURITY_ATTRIBUTES, поэтому CreateNamedPipeW делаем сами,
 /// а готовый хендл отдаём tokio (он сам регистрирует его в IOCP).
+/// first_instance=true добавляет FILE_FLAG_FIRST_PIPE_INSTANCE.
 #[cfg(target_os = "windows")]
-fn create_secure_pipe() -> Result<tokio::net::windows::named_pipe::NamedPipeServer, String> {
+fn create_secure_pipe(first_instance: bool) -> Result<tokio::net::windows::named_pipe::NamedPipeServer, String> {
     use windows::core::{PCWSTR, PWSTR};
     use windows::Win32::Foundation::{CloseHandle, BOOL, HANDLE, HLOCAL, LocalFree};
     use windows::Win32::Security::Authorization::{
@@ -133,7 +144,8 @@ fn create_secure_pipe() -> Result<tokio::net::windows::named_pipe::NamedPipeServ
         TOKEN_USER,
     };
     use windows::Win32::Storage::FileSystem::{
-        FILE_FLAGS_AND_ATTRIBUTES, FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX,
+        FILE_FLAGS_AND_ATTRIBUTES, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED,
+        PIPE_ACCESS_DUPLEX,
     };
     use windows::Win32::System::Pipes::{
         CreateNamedPipeW, PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE, PIPE_UNLIMITED_INSTANCES,
@@ -197,18 +209,20 @@ fn create_secure_pipe() -> Result<tokio::net::windows::named_pipe::NamedPipeServ
             lpSecurityDescriptor: psd.0,
             bInheritHandle: BOOL(0),
         };
-        // Защита от squatting: имя \\.\pipe\mynx резервируется за нашим
-        // процессом через DACL (текущий пользователь + SYSTEM + Admins).
-        // FILE_FLAG_FIRST_PIPE_INSTANCE здесь НЕ используется: цикл
-        // run_ipc_server обрабатывает соединения в spawned-задачах и должен
-        // создавать следующий экземпляр пайпа, пока клиент держит
-        // предыдущий. С FIRST_PIPE_INSTANCE CreateNamedPipeW возвращает
-        // ERROR_ACCESS_DENIED на втором витке, и IPC-сервер умирает после
-        // первого запроса. DACL в SECURITY_ATTRIBUTES ужесточает доступ
-        // и без этого флага.
-        let open_mode = FILE_FLAGS_AND_ATTRIBUTES(
-            PIPE_ACCESS_DUPLEX.0 | FILE_FLAG_OVERLAPPED.0,
-        );
+        // Защита от squatting: первый экземпляр создаётся с
+        // FILE_FLAG_FIRST_PIPE_INSTANCE — если имя \\.\pipe\mynx уже
+        // занято (в т.ч. процессом того же пользователя), CreateNamedPipeW
+        // падает с ERROR_ACCESS_DENIED, и run_ipc_server выключает IPC.
+        // Сам по себе DACL от squatting не защищает: он не отличает наш
+        // процесс от чужого с тем же SID. Последующие экземпляры — без
+        // флага: цикл обрабатывает соединения в spawned-задачах и должен
+        // создавать следующий экземпляр, пока клиент держит предыдущий
+        // (с флагом второй CreateNamedPipeW вернул бы ERROR_ACCESS_DENIED).
+        let mut open_mode_raw = PIPE_ACCESS_DUPLEX.0 | FILE_FLAG_OVERLAPPED.0;
+        if first_instance {
+            open_mode_raw |= FILE_FLAG_FIRST_PIPE_INSTANCE.0;
+        }
+        let open_mode = FILE_FLAGS_AND_ATTRIBUTES(open_mode_raw);
         let raw = CreateNamedPipeW(
             PCWSTR(name.as_ptr()),
             open_mode,

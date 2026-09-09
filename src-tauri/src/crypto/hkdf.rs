@@ -1,5 +1,6 @@
 use hkdf::Hkdf;
 use sha2::Sha256;
+use zeroize::Zeroizing;
 
 /// Derive a key using HKDF-SHA256.
 pub fn derive_key(salt: &[u8], ikm: &[u8], info: &[u8], out_len: usize) -> anyhow::Result<Vec<u8>> {
@@ -30,19 +31,22 @@ pub fn derive_encryption_key_hw(
 ) -> anyhow::Result<[u8; 32]> {
     let hkdf_result = match hw_key {
         Some(hw) => {
-            let mut full = [0u8; 80];
+            // Zeroizing: IKM собирается из ключевого материала — затираем
+            // буфер при выходе из области на любом пути (включая ошибки).
+            let mut full = Zeroizing::new([0u8; 80]);
             full[..32].copy_from_slice(primary_key);
             full[32..48].copy_from_slice(device_key);
             full[48..].copy_from_slice(hw);
-            derive_key(&[], &full, info, 32)?
+            derive_key(&[], &*full, info, 32)
         }
         None => {
-            let mut full = [0u8; 48];
+            let mut full = Zeroizing::new([0u8; 48]);
             full[..32].copy_from_slice(primary_key);
             full[32..].copy_from_slice(device_key);
-            derive_key(&[], &full, info, 32)?
+            derive_key(&[], &*full, info, 32)
         }
     };
+    let hkdf_result = Zeroizing::new(hkdf_result?);
     let mut result = [0u8; 32];
     result.copy_from_slice(&hkdf_result);
     Ok(result)

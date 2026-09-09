@@ -1,5 +1,8 @@
 use std::thread;
 use std::time::Duration;
+use tauri::State;
+
+use crate::commands::AppState;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYEVENTF_UNICODE,
     KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_CONTROL, VK_LCONTROL, VK_RCONTROL, VK_LSHIFT, VK_MENU, VK_RMENU,
@@ -19,13 +22,16 @@ const MODIFIER_KEYS: [VIRTUAL_KEY; 7] = [
 pub fn type_text(text: &str) -> Result<(), String> {
     let mut inputs: Vec<INPUT> = Vec::new();
 
-    for ch in text.chars() {
+    // UTF-16 кодовые единицы (включая суррогатные пары) — SendInput
+    // принимает именно их, а не кодпоинты: `ch as u16` обрезал бы
+    // не-BMP символы (emoji) до мусорной половины суррогатной пары.
+    for unit in text.encode_utf16() {
         // Key down
         let mut input_down = INPUT {
             r#type: INPUT_KEYBOARD,
             Anonymous: INPUT_0::default(),
         };
-        input_down.Anonymous.ki.wScan = ch as u16;
+        input_down.Anonymous.ki.wScan = unit;
         input_down.Anonymous.ki.dwFlags = KEYEVENTF_UNICODE;
         inputs.push(input_down);
 
@@ -34,7 +40,7 @@ pub fn type_text(text: &str) -> Result<(), String> {
             r#type: INPUT_KEYBOARD,
             Anonymous: INPUT_0::default(),
         };
-        input_up.Anonymous.ki.wScan = ch as u16;
+        input_up.Anonymous.ki.wScan = unit;
         input_up.Anonymous.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
         inputs.push(input_up);
     }
@@ -122,8 +128,24 @@ fn press_key(vk: VIRTUAL_KEY) -> Result<(), String> {
     Ok(())
 }
 
+/// Вызов из вебвью исполняет SendInput в активное окно — только
+/// при разблокированной сессии, иначе XSS в вебвью = инъекция
+/// нажатий в любое приложение.
+fn require_unlocked_session(state: &AppState) -> Result<(), String> {
+    state.inner.enforce_autolock()?;
+    if state.inner.vault_session.lock().unwrap().is_none() {
+        return Err("Vault is locked".to_string());
+    }
+    Ok(())
+}
+
 #[tauri::command]
-pub fn auto_type_credentials(username: String, password: String) -> Result<(), String> {
+pub fn auto_type_credentials(
+    username: String,
+    password: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    require_unlocked_session(&state)?;
     wait_for_modifiers_released();
     thread::sleep(Duration::from_millis(500));
     type_username_password(&username, &password, true)?;
@@ -131,7 +153,8 @@ pub fn auto_type_credentials(username: String, password: String) -> Result<(), S
 }
 
 #[tauri::command]
-pub fn auto_type_text(text: String) -> Result<(), String> {
+pub fn auto_type_text(text: String, state: State<'_, AppState>) -> Result<(), String> {
+    require_unlocked_session(&state)?;
     wait_for_modifiers_released();
     thread::sleep(Duration::from_millis(500));
     type_text(&text)

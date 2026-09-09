@@ -57,6 +57,7 @@ pub fn main() {
     let ipc_state = app_state.clone_inner();
     let hide_state = app_state.clone_inner();
     let exit_state = app_state.clone_inner();
+    let sweep_state = app_state.clone_inner();
 
     tauri::Builder::default()
         .manage(app_state)
@@ -103,6 +104,17 @@ pub fn main() {
                 if let Err(e) = ipc::run_ipc_server(ipc_state).await {
                     crate::log_error!("IPC server error: {e}");
                 }
+            });
+
+            // Фоновый свипер автоблокировки: enforce_autolock — ленивый,
+            // срабатывает только при входящих вызовах; без них простаившая
+            // сессия держала бы ключи в RAM бесконечно. Детачнутый поток,
+            // умирает вместе с процессом; poisoned-мьютексы обрабатываются
+            // внутри sweep_autolock.
+            let sweep_state = sweep_state.clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_secs(10));
+                sweep_state.sweep_autolock();
             });
 
             let quit = tauri::menu::MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;

@@ -126,6 +126,62 @@ impl AppStateInner {
         self.touch_activity();
         Ok(())
     }
+
+    /// Фоновый свипер автоблокировки: enforce_autolock — ленивая проверка,
+    /// срабатывает только при входящем вызове; без вызовов простаивающая
+    /// сессия висела бы в RAM бесконечно. Поток в main.rs дёргает этот
+    /// метод каждые ~10 секунд. Условие — то же, что в enforce_autolock,
+    /// но без touch_activity и с устойчивостью к poisoned-мьютексам:
+    /// заброшенный guard паниковавшей команды не должен ронять фоновый
+    /// поток.
+    pub fn sweep_autolock(&self) {
+        let session_active = match self.vault_session.lock() {
+            Ok(g) => g.is_some(),
+            Err(p) => p.into_inner().is_some(),
+        };
+        if !session_active {
+            return;
+        }
+        let minutes = match self.autolock_minutes.lock() {
+            Ok(g) => *g,
+            Err(p) => *p.into_inner(),
+        };
+        if minutes == 0 {
+            return;
+        }
+        let last = match self.last_activity.lock() {
+            Ok(g) => *g,
+            Err(p) => *p.into_inner(),
+        };
+        let expired = match last {
+            Some(t) => t.elapsed() >= std::time::Duration::from_secs(minutes * 60),
+            None => false,
+        };
+        if !expired {
+            return;
+        }
+        // wipe_secrets берёт свои мьютексы через unwrap: гасим возможную
+        // панику от poison, чтобы поток-свипер не умер.
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            super::wipe_secrets(self);
+        }))
+        .is_err()
+        {
+            crate::log_warn!("autolock sweep: wipe panicked (poisoned lock)");
+            return;
+        }
+        crate::log_info!("autolock sweep: idle session wiped");
+        // Фронт слушает "vault-locked" (как при lock_on_hide) и уходит
+        // на экран блокировки.
+        let handle = match self.app_handle.lock() {
+            Ok(g) => g.clone(),
+            Err(p) => p.into_inner().clone(),
+        };
+        if let Some(h) = handle {
+            use tauri::Emitter;
+            let _ = h.emit("vault-locked", ());
+        }
+    }
 }
 
 fn generate_api_token() -> String {

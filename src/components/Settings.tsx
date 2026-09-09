@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
@@ -43,6 +43,7 @@ import { useTheme } from "next-themes";
 import { useI18n } from "@/i18n";
 import { isInvalidShortcut } from "@/lib/errors";
 import { useSettingsStore } from "@/stores/settings";
+import { useClipboardStore } from "@/stores/clipboard";
 import { useAppStore, isTauri } from "@/stores/app";
 import { EmergencyKit } from "@/components/EmergencyKit";
 import { HotkeyInput } from "@/components/HotkeyInput";
@@ -87,6 +88,7 @@ export function Settings({ isOpen, onClose }: SettingsProps) {
   const autoLockMinutes = useSettingsStore((s) => s.autoLockMinutes);
   const clipboardClearSeconds = useSettingsStore((s) => s.clipboardClearSeconds);
   const clipboardClearEnabled = useSettingsStore((s) => s.clipboardClearEnabled);
+  const clipboardCopy = useClipboardStore((s) => s.copy);
   const glassIntensity = useSettingsStore((s) => s.glassIntensity);
   const setAutoLockMinutes = useSettingsStore((s) => s.setAutoLockMinutes);
   const setClipboardClearSeconds = useSettingsStore((s) => s.setClipboardClearSeconds);
@@ -220,7 +222,7 @@ export function Settings({ isOpen, onClose }: SettingsProps) {
 
   const copyToken = async () => {
     if (!apiToken) return;
-    await navigator.clipboard.writeText(apiToken);
+    await clipboardCopy(apiToken, clipboardClearSeconds, clipboardClearEnabled);
     setTokenCopied(true);
     setTimeout(() => setTokenCopied(false), 2000);
   };
@@ -265,7 +267,9 @@ export function Settings({ isOpen, onClose }: SettingsProps) {
       setBioError(
         raw.includes("biometry_requires_real_vault")
           ? t("biometryDecoyError")
-          : t("biometryToggleError")
+          : raw.includes("biometry_hw_key_forbidden")
+            ? t("biometryHwKeyError")
+            : t("biometryToggleError")
       );
     }
   };

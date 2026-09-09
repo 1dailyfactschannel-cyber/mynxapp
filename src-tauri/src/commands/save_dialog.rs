@@ -40,7 +40,10 @@ pub fn pick_save_path(
 
     let mut file_buf = vec![0u16; 1024];
     let default_wide: Vec<u16> = default_name.encode_utf16().collect();
-    file_buf[..default_wide.len()].copy_from_slice(&default_wide);
+    // default_name приходит с фронтенда и может не влезть в буфер:
+    // усекаем, оставляя место под NUL-терминатор (без паники).
+    let copy_len = default_wide.len().min(file_buf.len() - 1);
+    file_buf[..copy_len].copy_from_slice(&default_wide[..copy_len]);
 
     let filter_wide: Vec<u16> = format!(
         "{} (*.{})\0*.{}\0All Files (*.*)\0*.*\0\0",

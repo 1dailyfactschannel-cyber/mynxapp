@@ -38,7 +38,7 @@ export function Onboarding({ onComplete, onCancel }: OnboardingProps) {
     strength >= 80 ? "bg-strong" : strength >= 50 ? "bg-good" : "bg-fair";
 
   const handleCreate = async () => {
-    if (password !== confirmPassword || password.length < 8) return;
+    if (password !== confirmPassword || password.length < 12) return;
     setIsLoading(true);
     try {
       await createVault(vaultName, "vaults", password);
@@ -75,9 +75,9 @@ export function Onboarding({ onComplete, onCancel }: OnboardingProps) {
           </div>
           <div className="grid grid-cols-3 gap-4 text-center">
             {[
-              { icon: Lock, label: t("featOffline") },
-              { icon: Key, label: t("featEncrypted") },
-              { icon: Shield, label: t("featSecure") },
+              { icon: Lock, label: t("welcomeFeatureOffline") },
+              { icon: Key, label: t("welcomeFeatureEncrypted") },
+              { icon: Shield, label: t("welcomeFeatureSecure") },
             ].map((f) => (
               <div key={f.label} className="glass-card p-3">
                 <f.icon className="w-6 h-6 mx-auto mb-2" style={{ color: "var(--accent)" }} />
@@ -89,12 +89,12 @@ export function Onboarding({ onComplete, onCancel }: OnboardingProps) {
       ),
     },
     {
-      title: t("createVaultTitle"),
-      description: t("createVaultDesc"),
+      title: t("onboardingStep2Title"),
+      description: t("onboardingStep2Desc"),
       content: (
         <div className="space-y-4">
           <div className="space-y-2">
-            <label className="text-sm t2">{t("vaultName")}</label>
+            <label className="text-sm t2">{t("onboardingName")}</label>
             <input
               type="text"
               value={vaultName}
@@ -104,13 +104,13 @@ export function Onboarding({ onComplete, onCancel }: OnboardingProps) {
           </div>
 
           <div className="space-y-2">
-            <label className="text-sm t2">{t("masterPasswordLabel")}</label>
+            <label className="text-sm t2">{t("onboardingPassword")}</label>
             <div className="relative">
               <input
                 type={showPassword ? "text" : "password"}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder={t("masterPasswordHint")}
+                placeholder={t("onboardingPasswordPlaceholder")}
                 className="field rounded-xl px-4 py-3 pr-12 font-mono"
               />
               <button
@@ -123,7 +123,7 @@ export function Onboarding({ onComplete, onCancel }: OnboardingProps) {
           </div>
 
           <div className="space-y-2">
-            <label className="text-sm t2">{t("confirmPasswordLabel")}</label>
+            <label className="text-sm t2">{t("onboardingConfirm")}</label>
             <input
               type={showPassword ? "text" : "password"}
               value={confirmPassword}
@@ -137,7 +137,7 @@ export function Onboarding({ onComplete, onCancel }: OnboardingProps) {
             />
             {confirmPassword && password !== confirmPassword && (
               <p className="text-xs" style={{ color: "var(--danger)" }}>
-                {t("passwordsMismatch")}
+                {t("onboardingErrorPw")}
               </p>
             )}
           </div>
@@ -145,7 +145,7 @@ export function Onboarding({ onComplete, onCancel }: OnboardingProps) {
           {password && (
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <span className="text-sm t2">{t("strengthLabel")}</span>
+                <span className="text-sm t2">{t("onboardingStrength")}</span>
                 <span className={`text-sm font-bold ${strengthClass}`}>{strength}/100</span>
               </div>
               <div className="h-2 rounded-full overflow-hidden" style={{ background: "var(--kbd-bg)" }}>
@@ -209,7 +209,7 @@ export function Onboarding({ onComplete, onCancel }: OnboardingProps) {
                 className="btn-ghost px-4 py-3"
               >
                 <ArrowLeft className="w-4 h-4" />
-                {t("back")}
+                {t("onboardingBtnBack")}
               </motion.button>
             )}
 
@@ -220,7 +220,7 @@ export function Onboarding({ onComplete, onCancel }: OnboardingProps) {
                 onClick={() => setStep(step + 1)}
                 className="btn-primary flex-1 py-3"
               >
-                {t("continue")}
+                {t("onboardingBtnContinue")}
                 <ArrowRight className="w-4 h-4" />
               </motion.button>
             ) : (
@@ -228,15 +228,15 @@ export function Onboarding({ onComplete, onCancel }: OnboardingProps) {
                 whileHover={{ scale: 1.015 }}
                 whileTap={{ scale: 0.985 }}
                 onClick={handleCreate}
-                disabled={isLoading || password !== confirmPassword || password.length < 8}
+                disabled={isLoading || password !== confirmPassword || password.length < 12}
                 className="btn-primary flex-1 py-3"
               >
                 {isLoading ? (
-                  t("creating")
+                  t("onboardingBtnCreating")
                 ) : (
                   <>
                     <Save className="w-4 h-4" />
-                    {t("createVault")}
+                    {t("onboardingCreate")}
                   </>
                 )}
               </motion.button>

@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 use tauri::State;
 use zeroize::Zeroizing;
@@ -22,6 +22,71 @@ use super::validate_master_password;
 use super::hw_key::{hw_registry_forget, hw_registry_remember, resolve_hw_keyfile};
 use crate::vault::operations::{read_hw_keyfile};
 
+/// SECURITY: имя vault-файла приходит с фронта — отсекаем path traversal:
+/// пустые/слишком длинные имена, разделители путей, `..` и control chars.
+fn validate_vault_name(name: &str) -> Result<(), String> {
+    if name.is_empty() || name.chars().count() > 128 {
+        return Err("vault_name_invalid".to_string());
+    }
+    if name.contains("..")
+        || name.contains('/')
+        || name.contains('\\')
+        || name.chars().any(char::is_control)
+    {
+        return Err("vault_name_invalid".to_string());
+    }
+    Ok(())
+}
+
+/// SECURITY: относительный путь к директории vault-файлов — тоже ввод
+/// с фронта. Запрещаем абсолютные пути, prefix-компоненты (`C:`, `\\?\`),
+/// корень и `..`, чтобы join с base_dir не мог выйти за его пределы.
+fn validate_vault_rel_path(path: &str) -> Result<(), String> {
+    let p = Path::new(path);
+    if p.is_absolute() {
+        return Err("vault_path_invalid".to_string());
+    }
+    for component in p.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir | Component::ParentDir => {
+                return Err("vault_path_invalid".to_string());
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Ключ для rate-limit: канонический путь vault-файла, чтобы алиасы одного
+/// файла (`C:\a\v.safepass`, `C:/a/v.safepass`, `\\?\C:\...`) делили один
+/// счётчик попыток. Если файла ещё нет — лексическая нормализация
+/// абсолютного пути (убираем `.`/`..`, не трогая симлинки).
+fn normalize_vault_key(vault_id: &str) -> String {
+    let path = Path::new(vault_id);
+    if let Ok(canonical) = std::fs::canonicalize(path) {
+        return canonical.to_string_lossy().to_string();
+    }
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        match std::env::current_dir() {
+            Ok(cwd) => cwd.join(path),
+            Err(_) => path.to_path_buf(),
+        }
+    };
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized.to_string_lossy().to_string()
+}
+
 #[tauri::command]
 pub async fn vault_create(
     request: VaultCreateRequest,
@@ -30,6 +95,10 @@ pub async fn vault_create(
     // SECURITY: минимальная длина и базовая структурная проверка
     // мастер-пароля. UI тоже валидирует, но бэкенд не должен доверять фронту.
     validate_master_password(&request.master_password)?;
+
+    // SECURITY: name/path приходят с фронта — валидируем до любой работы с FS.
+    validate_vault_name(&request.name)?;
+    validate_vault_rel_path(&request.path)?;
 
     // Generate device key
     let device_key = {
@@ -48,6 +117,31 @@ pub async fn vault_create(
         .to_path_buf();
     let vaults_dir = base_dir.join(&request.path);
 
+    // SECURITY: до создания каталогов канонизируем ближайший
+    // существующий предок — junction/симлинк внутри base_dir иначе
+    // выведет create_dir_all наружу ещё до проверки результата.
+    let base_canonical = std::fs::canonicalize(&base_dir).map_err(|e| e.to_string())?;
+    {
+        let mut ancestor: &std::path::Path = &vaults_dir;
+        while !ancestor.exists() {
+            ancestor = ancestor.parent().ok_or("vault_path_invalid")?;
+        }
+        let ancestor_canonical =
+            std::fs::canonicalize(ancestor).map_err(|e| e.to_string())?;
+        if !ancestor_canonical.starts_with(&base_canonical) {
+            return Err("vault_path_invalid".to_string());
+        }
+    }
+
+    // Ensure directory exists
+    std::fs::create_dir_all(&vaults_dir).map_err(|e| e.to_string())?;
+
+    // SECURITY: контрольная проверка после создания (гонки/TOCTOU).
+    let vaults_canonical = std::fs::canonicalize(&vaults_dir).map_err(|e| e.to_string())?;
+    if !vaults_canonical.starts_with(&base_canonical) {
+        return Err("vault_path_invalid".to_string());
+    }
+
     let vault = create_vault(
         &vaults_dir,
         &request.master_password,
@@ -55,19 +149,38 @@ pub async fn vault_create(
     )
     .map_err(|e| e.to_string())?;
 
-    // Ensure directory exists
-    std::fs::create_dir_all(&vaults_dir).map_err(|e| e.to_string())?;
-
     // Save vault to file
     let vault_path = vaults_dir.join(format!("{}.safepass", request.name));
     let vault_bytes = serde_json::to_vec(&vault).map_err(|e| e.to_string())?;
     std::fs::write(&vault_path, &vault_bytes).map_err(|e| e.to_string())?;
 
-    // Save device key: в keyring (основной путь) + файл-fallback
+    // Save device key: основной путь — Windows Credential Manager
+    // (store_device_key). Открытый файл `.safepass.dk` пишется ТОЛЬКО
+    // как fallback, когда keyring недоступен (см. device_key.rs).
     #[cfg(target_os = "windows")]
-    store_device_key(&vault_path, &device_key);
-    let dk_path = vault_path.with_extension("safepass.dk");
-    std::fs::write(&dk_path, device_key).map_err(|e| e.to_string())?;
+    {
+        store_device_key(&vault_path, &device_key);
+        let dk_path = vault_path.with_extension("safepass.dk");
+        // Удаляем возможный устаревший plaintext-файл ДО проверки keyring,
+        // чтобы load_device_key не подхватил старый ключ из файла
+        // (fallback-ветка). Ошибка удаления не критична.
+        let _ = std::fs::remove_file(&dk_path);
+        match load_device_key(&vault_path) {
+            Ok(loaded) if loaded == device_key => {
+                // Keyring сохранил ключ — plaintext-файл не нужен.
+            }
+            _ => {
+                // Keyring недоступен или запись не удалась — файл-fallback.
+                std::fs::write(&dk_path, device_key).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        // Без Credential Manager файл-fallback — единственный способ хранения.
+        let dk_path = vault_path.with_extension("safepass.dk");
+        std::fs::write(&dk_path, device_key).map_err(|e| e.to_string())?;
+    }
 
     let vault_id = vault_path.to_string_lossy().to_string();
 
@@ -94,7 +207,10 @@ pub async fn vault_unlock(
     state: State<'_, AppState>,
 ) -> Result<VaultUnlockResponse, String> {
     // Brute-force guard: exponential backoff after repeated failures.
-    if let Some(wait) = state.inner.unlock_attempts.retry_after(&request.vault_id) {
+    // Ключ — канонический путь: алиасы одного файла (слэши, `\\?\`, `..`)
+    // должны делить один счётчик, иначе лимит обходится сменой написания пути.
+    let rate_key = normalize_vault_key(&request.vault_id);
+    if let Some(wait) = state.inner.unlock_attempts.retry_after(&rate_key) {
         return Err(format!(
             "Too many attempts. Retry in {} seconds",
             wait.as_secs().max(1)
@@ -138,13 +254,13 @@ pub async fn vault_unlock(
     ) {
         Ok(session) => session,
         Err(_) => {
-            state.inner.unlock_attempts.record_failure(&request.vault_id);
+            state.inner.unlock_attempts.record_failure(&rate_key);
             return Err("wrong_password".to_string());
         }
     };
 
     // Successful unlock clears the failure counter.
-    state.inner.unlock_attempts.reset(&request.vault_id);
+    state.inner.unlock_attempts.reset(&rate_key);
 
     session.vault_id = request.vault_id.clone();
 
@@ -476,12 +592,14 @@ pub async fn vault_export(
 
 /// Return the device key (hex) of the currently unlocked vault.
 /// The Emergency Kit QR embeds it: vault file + device key + master
-/// password is the recovery path, so it is exposed only while unlocked.
+/// password is the recovery path, so it is exposed only while unlocked
+/// and the session has not timed out (backend-enforced autolock).
 #[tauri::command]
 pub async fn get_device_key(
     request: VaultIdRequest,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
+    state.inner.enforce_autolock()?;
     session_keys(&state, &request.vault_id)?;
     let device_key = load_device_key(Path::new(&request.vault_id))?;
     Ok(hex_encode(&device_key))

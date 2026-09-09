@@ -56,6 +56,23 @@ export const en: Record<string, string> = {
   onboardingErrorPw: "Passwords do not match",
   onboardingErrorShort: "Password must be at least 12 characters",
 
+  // Onboarding step 1
+  welcomeTitle: "Welcome to Mynx",
+  welcomeDesc: "Your offline password manager: everything is stored locally, under one master password.",
+  welcomeText: "Safe. Private. Simple.",
+  welcomeFeatureOffline: "All on device",
+  welcomeFeatureEncrypted: "End-to-end encryption",
+  welcomeFeatureSecure: "Master-password protected",
+
+  // Onboarding step 2
+  onboardingStep2Title: "Create your first vault",
+  onboardingStep2Desc: "Set a name and a master password.",
+  onboardingPasswordPlaceholder: "At least 12 characters",
+  onboardingStrength: "Strength",
+  onboardingBtnBack: "Back",
+  onboardingBtnContinue: "Continue",
+  onboardingBtnCreating: "Creating…",
+
   // Header
   allEntries: "All entries",
   unlocked: "Unlocked",
@@ -135,6 +152,7 @@ export const en: Record<string, string> = {
   biometryNotAvailable: "Windows Hello is not available on this device",
   biometryToggleError: "Failed to change Windows Hello",
   biometryDecoyError: "Windows Hello works only with a real vault",
+  biometryHwKeyError: "Windows Hello is unavailable for vaults protected by a USB key",
   hwKey: "Hardware key (USB)",
   hwKeyDesc: "Bind the vault to a USB keyfile as a second factor.",
   hwKeyStatusOn: "Enabled",

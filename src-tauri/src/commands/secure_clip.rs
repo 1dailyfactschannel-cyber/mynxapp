@@ -14,6 +14,9 @@ pub async fn secure_copy(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     state.inner.enforce_autolock()?;
+    if state.inner.vault_session.lock().unwrap().is_none() {
+        return Err("Vault is locked".to_string());
+    }
     let ciphertext = Aes256GcmAead::encrypt_with_aad(
         &state.inner.secure_clip_key,
         request.text.as_bytes(),
@@ -30,6 +33,11 @@ pub async fn secure_copy(
 /// после вставки очищается.
 #[tauri::command]
 pub async fn secure_paste(state: State<'_, AppState>) -> Result<(), String> {
+    // Прямой ввод в активное окно — только при разблокированной сессии.
+    state.inner.enforce_autolock()?;
+    if state.inner.vault_session.lock().unwrap().is_none() {
+        return Err("Vault is locked".to_string());
+    }
     let ciphertext = {
         let mut clip = state.inner.secure_clipboard.lock().unwrap();
         clip.take()

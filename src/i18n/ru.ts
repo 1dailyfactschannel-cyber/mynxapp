@@ -56,6 +56,23 @@ export const ru: Record<string, string> = {
   onboardingErrorPw: "Пароли не совпадают",
   onboardingErrorShort: "Пароль должен быть не короче 12 символов",
 
+  // Onboarding step 1
+  welcomeTitle: "Добро пожаловать в Mynx",
+  welcomeDesc: "Ваш офлайн-менеджер паролей: всё хранится локально, под одним мастер-паролем.",
+  welcomeText: "Безопасно. Приватно. Просто.",
+  welcomeFeatureOffline: "Всё на устройстве",
+  welcomeFeatureEncrypted: "Сквозное шифрование",
+  welcomeFeatureSecure: "Под мастер-паролем",
+
+  // Onboarding step 2
+  onboardingStep2Title: "Создайте первое хранилище",
+  onboardingStep2Desc: "Задайте имя и мастер-пароль.",
+  onboardingPasswordPlaceholder: "Минимум 12 символов",
+  onboardingStrength: "Надёжность",
+  onboardingBtnBack: "Назад",
+  onboardingBtnContinue: "Далее",
+  onboardingBtnCreating: "Создаём…",
+
   // Header
   allEntries: "Все записи",
   unlocked: "Разблокировано",
@@ -135,6 +152,7 @@ export const ru: Record<string, string> = {
   biometryNotAvailable: "Windows Hello недоступен на этом устройстве",
   biometryToggleError: "Не удалось изменить Windows Hello",
   biometryDecoyError: "Windows Hello работает только с настоящим хранилищем",
+  biometryHwKeyError: "Windows Hello недоступен для хранилища, защищённого USB-ключом",
   hwKey: "Аппаратный ключ (USB)",
   hwKeyDesc: "Привязать хранилище к USB-флешке с keyfile как второй фактор.",
   hwKeyStatusOn: "Включён",

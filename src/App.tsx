@@ -19,6 +19,7 @@ function App() {
   const setHasCompletedOnboarding = useAppStore((s) => s.setHasCompletedOnboarding);
   const setScreen = useAppStore((s) => s.setScreen);
   const loadVaults = useAppStore((s) => s.loadVaults);
+  const activeVault = useAppStore((s) => s.activeVault);
   const glassIntensity = useSettingsStore((s) => s.glassIntensity);
   const { resolvedTheme } = useTheme();
   const { lang } = useI18n();
@@ -28,6 +29,15 @@ function App() {
     if (!isTauri) return;
     return initBackendSync();
   }, []);
+
+  // ----- При старте: найти существующие vault-файлы и сразу выставить
+  // activeVault / screen, чтобы пользователь не видел «Хранилище не выбрано».
+  // В Tauri: list_vault_files → 0 → onboarding, 1 → lock с выбранным,
+  //                                  >1 → vault-selector.
+  // В браузере (демо): ставим «Personal» активным.
+  useEffect(() => {
+    void loadVaults();
+  }, [loadVaults]);
 
   // Язык → бэкенд: проброс через i18n-context нельзя делать в подписке,
   // потому что i18n живёт в React-Context. Дёргаем явным вызовом при изменении.

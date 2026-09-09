@@ -114,6 +114,10 @@ pub fn session_keys(
     state: &super::AppState,
     vault_id: &str,
 ) -> Result<([u8; 32], [u8; 32], bool), String> {
+    // Backend-enforced autolock, как в vault_get_entries: простаивающая
+    // сессия не должна выдавать ключи (в т.ч. для копирования vault +
+    // device key в бэкап) после таймаута.
+    state.inner.enforce_autolock()?;
     let session = state.inner.vault_session.lock().unwrap();
     match session.as_ref() {
         Some(s) if s.vault_id == vault_id => Ok((s.encryption_key, s.payload_key, s.is_decoy)),

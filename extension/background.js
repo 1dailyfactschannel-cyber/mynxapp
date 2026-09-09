@@ -15,6 +15,11 @@ const FAVICON_CACHE_KEY = "faviconCache";
 const FAVICON_CACHE_MAX = 300;
 const FAVICON_MAX_BYTES = 100 * 1024;
 const BACKUP_ALARM = "mynx-vault-backup";
+// Периодический опрос статуса: у десктопа нет push-канала, поэтому без
+// polling бейдж застревает в "Locked", если приложение разблокировали
+// после единственного стартового пробника.
+const STATUS_ALARM = "mynx-status-poll";
+const STATUS_POLL_MINUTES = 0.5;
 
 let statusCache = null; // { data: { unlocked, running }, at: number }
 let pairKey = null; // ключ доверенного клиента, живёт в chrome.storage.session
@@ -275,13 +280,19 @@ async function runBackupNow() {
 }
 
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm && alarm.name === BACKUP_ALARM) {
+  if (!alarm) return;
+  if (alarm.name === BACKUP_ALARM) {
     runBackupNow();
+  } else if (alarm.name === STATUS_ALARM) {
+    getStatus(true);
   }
 });
 
 // Восстановить alarm после рестарта service worker / браузера.
 getBackupSettings().then(ensureBackupAlarm);
+
+// Alarm персистентен между рестартами service worker; create идемпотентен.
+chrome.alarms.create(STATUS_ALARM, { periodInMinutes: STATUS_POLL_MINUTES });
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (!request || !request.type) return false;

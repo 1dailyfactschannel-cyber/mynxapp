@@ -6,6 +6,11 @@
 //! verifies the user with UserConsentVerifier (Hello face/fingerprint/PIN)
 //! and rebuilds the session from the stored key — no password prompt.
 //!
+//! Vaults protected by a USB hardware keyfile (header.hw_key) are exempt:
+//! enabling Hello is refused (the stored key would bypass the second
+//! factor), and unlock defensively requires the keyfile exactly like the
+//! password path, in case a credential predates the refusal.
+//!
 //! P1-12: when Microsoft Passport is available the stored key is WRAPPED —
 //! encrypted with a key derived from a KeyCredential signature, so reading
 //! the Credential Manager entry directly (any process of the same user)
@@ -24,6 +29,7 @@ use zeroize::{Zeroize, Zeroizing};
 use crate::commands::{
     count_entries, load_device_key, AppState, VaultIdRequest, VaultUnlockResponse,
 };
+use crate::commands::hw_key::{hw_registry_remember, resolve_hw_keyfile};
 use crate::crypto::Aes256GcmAead;
 use crate::vault::operations::{active_payload, decrypt_entries, load_vault_file};
 use crate::vault::types::{VaultInnerHeader, VaultSession};
@@ -272,6 +278,14 @@ pub async fn biometry_enable(
         return Err("biometry_requires_real_vault".to_string());
     }
 
+    // SECURITY: vault с аппаратным ключом (USB keyfile как 2FA). Сохранение
+    // ключа сессии в Credential Manager обошло бы второй фактор — одна
+    // Hello-проверка открывала бы vault без keyfile. Запрещаем включение.
+    let vault = load_vault_file(Path::new(&request.vault_id)).map_err(|e| e.to_string())?;
+    if vault.header.hw_key.is_some() {
+        return Err("biometry_hw_key_forbidden".to_string());
+    }
+
     // P1-12: стараемся завернуть ключ сессии в Passport-обёртку — RequestCreate
     // показывает Hello-промпт, ключ в Credential Manager лежит зашифрованным.
     // Если пользователь отклонил enrollment или Passport упал — не роняем
@@ -303,12 +317,22 @@ pub async fn biometry_disable(request: VaultIdRequest) -> Result<(), String> {
     }
 }
 
+/// Запрос на Hello-разблокировку. `keyfile_path` — необязательный явный
+/// путь к USB keyfile (как в VaultUnlockRequest): нужен только для vault
+/// с аппаратным ключом, если реестр и скан дисков его не нашли.
+#[derive(serde::Deserialize)]
+pub struct VaultUnlockBiometryRequest {
+    pub vault_id: String,
+    #[serde(default)]
+    pub keyfile_path: Option<String>,
+}
+
 /// Unlock the vault via Windows Hello instead of the master password.
 /// Same response shape as vault_unlock; the frontend falls back to the
 /// password form on any error.
 #[tauri::command]
 pub async fn vault_unlock_biometry(
-    request: VaultIdRequest,
+    request: VaultUnlockBiometryRequest,
     state: State<'_, AppState>,
 ) -> Result<VaultUnlockResponse, String> {
     // Shared brute-force guard with the password path (same per-vault key).
@@ -352,9 +376,57 @@ pub async fn vault_unlock_biometry(
 
     let vault_path = Path::new(&request.vault_id);
     if !vault_path.exists() {
+        enc_key.zeroize();
         return Err("Vault file not found".to_string());
     }
-    let vault = load_vault_file(vault_path).map_err(|e| e.to_string())?;
+    let vault = match load_vault_file(vault_path) {
+        Ok(v) => v,
+        Err(e) => {
+            enc_key.zeroize();
+            return Err(e.to_string());
+        }
+    };
+
+    // SECURITY: аппаратный ключ — обязательный второй фактор, Hello его
+    // не заменяет. До исправления сохранённый в Credential Manager ключ
+    // сессии открывал такой vault без keyfile. Теперь keyfile ищется и
+    // проверяется точно как в парольном пути (явный путь → реестр → скан
+    // дисков); без него разблокировка не выполняется, даже если Hello
+    // прошла и ключ сессии валиден. Как и в vault_unlock, ошибка keyfile
+    // не засчитывается в brute-force счётчик.
+    let hw_secret = match vault.header.hw_key.as_ref() {
+        Some(info) => {
+            let device_key = match load_device_key(vault_path) {
+                Ok(key) => key,
+                Err(e) => {
+                    enc_key.zeroize();
+                    return Err(e.to_string());
+                }
+            };
+            let kf_path = match resolve_hw_keyfile(&info.keyfile_id, request.keyfile_path.as_deref()) {
+                Ok(path) => path,
+                Err(e) => {
+                    enc_key.zeroize();
+                    return Err(e);
+                }
+            };
+            let secret = match crate::vault::operations::read_hw_keyfile(
+                &kf_path,
+                &info.keyfile_id,
+                &device_key,
+            ) {
+                Ok(secret) => secret,
+                Err(_) => {
+                    enc_key.zeroize();
+                    return Err("hw_key_invalid".to_string());
+                }
+            };
+            // Запоминаем путь, чтобы не искать в следующий раз
+            hw_registry_remember(&info.keyfile_id, &kf_path);
+            Some(secret)
+        }
+        None => None,
+    };
 
     // Rebuild the session from the stored encryption key (no password).
     // AAD v2 with legacy fallback: the vault may predate the AAD binding.
@@ -399,7 +471,7 @@ pub async fn vault_unlock_biometry(
         let mut s = state.inner.vault_session.lock().unwrap();
         *s = Some(session);
         let mut hw = state.inner.hw_key_secret.lock().unwrap();
-        *hw = None;
+        *hw = hw_secret;
         let mut dk = state.inner.device_key.lock().unwrap();
         *dk = device_key;
     }

@@ -5,8 +5,17 @@ use super::app_state::AppState;
 /// Таймаут автоблокировки из настроек UI → бэкенд (минуты, 0 = выключено).
 /// Бэкенд держит свою копию и сам гасит сессию по простою —
 /// см. AppStateInner::enforce_autolock.
+///
+/// SECURITY: как и set_lock_on_hide, из активной сессии запрещено
+/// ослабление — установка 0 (выключение backend-автоблокировки):
+/// скомпрометированный вебвью не должен мочь отключить затирание RAM.
+/// Понизить таймаут до ненулевого значения можно в любой момент
+/// (защита усиливается); выключить — только когда хранилище заблокировано.
 #[tauri::command]
 pub async fn set_autolock_minutes(minutes: u64, state: State<'_, AppState>) -> Result<(), String> {
+    if minutes == 0 && state.inner.vault_session.lock().unwrap().is_some() {
+        return Err("autolock_weakening_forbidden".to_string());
+    }
     *state.inner.autolock_minutes.lock().unwrap() = minutes;
     Ok(())
 }

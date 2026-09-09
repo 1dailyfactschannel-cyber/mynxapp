@@ -14,6 +14,10 @@ pub const MAX_KEEP_COUNT: usize = 100;
 /// No master password needed: we back up the already-encrypted files.
 #[tauri::command]
 pub async fn vault_backup(request: BackupRequest, state: State<'_, AppState>) -> Result<(), String> {
+    // Backend-enforced autolock: тот же гейт, что и vault_get_entries —
+    // после таймаута простаившая сессия не должна копировать vault +
+    // device key в произвольный backup_path.
+    state.inner.enforce_autolock()?;
     session_keys(&state, &request.vault_id)?;
     let keep_count = request.keep_count.min(MAX_KEEP_COUNT);
     run_vault_backup_files(&request.vault_id, &request.backup_path, keep_count)

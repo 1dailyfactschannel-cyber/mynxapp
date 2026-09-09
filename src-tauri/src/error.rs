@@ -10,7 +10,7 @@ use thiserror::Error;
 /// Добавлять новый вариант = дополнить enum + ветку в `kind()`.
 /// НЕ МЕНЯТЬ строковые идентификаторы `kind()` без синхронизации с TS.
 #[derive(Debug, Error, Serialize)]
-#[serde(tag = "kind", content = "message")]
+#[serde(tag = "kind", content = "message", rename_all = "snake_case")]
 pub enum CommandError {
     // ---- Аутентификация и пароли ----
     #[error("Master password is too short")]

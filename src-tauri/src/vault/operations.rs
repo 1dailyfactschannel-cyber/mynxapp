@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::Path;
 use std::sync::Mutex;
+use zeroize::{Zeroize, Zeroizing};
 
 /* ------------------------------------------------------------------ */
 /* AAD-привязка (v2)                                                    */
@@ -56,11 +57,11 @@ pub fn create_vault(
 
     // 2. Derive primary key from password + salt
     let kdf_params = KdfParams::default();
-    let primary_key = derive_key(
+    let primary_key = Zeroizing::new(derive_key(
         master_password.as_bytes(),
         &salt,
         &kdf_params,
-    )?;
+    )?);
 
     // 3. Derive encryption key: primary_key + device_key → HKDF
     let enc_key = derive_encryption_key(
@@ -71,12 +72,12 @@ pub fn create_vault(
 
     // 4. Generate payload key (random, encrypted with enc_key)
     let payload_key = CryptoModule::generate_random_bytes(32)?;
-    let payload_key_arr: [u8; 32] = payload_key.try_into()
+    let mut payload_key_arr: [u8; 32] = payload_key.try_into()
         .map_err(|_| anyhow::anyhow!("payload key wrong size"))?;
 
     // 5. Create inner header
     let now = chrono::Utc::now().timestamp();
-    let inner_header = VaultInnerHeader {
+    let mut inner_header = VaultInnerHeader {
         created_at: now,
         modified_at: now,
         entry_count: 0,
@@ -85,7 +86,8 @@ pub fn create_vault(
     };
 
     // 6. Serialize and encrypt inner header with XChaCha20-Poly1305 (outer layer)
-    let inner_header_bytes = serde_json::to_vec(&inner_header)?;
+    // Открытая сериализация содержит payload_key — затираем на выходе.
+    let inner_header_bytes = Zeroizing::new(serde_json::to_vec(&inner_header)?);
     let encrypted_header = XChaCha20Aead::encrypt_with_aad(&enc_key,
         &inner_header_bytes,
         AAD_HEADER_V2,
@@ -98,6 +100,10 @@ pub fn create_vault(
         &empty_payload,
         AAD_PAYLOAD_V2,
     )?;
+
+    // Открытые копии payload-ключа больше не нужны.
+    payload_key_arr.zeroize();
+    inner_header.payload_key.zeroize();
 
     // 8. Build vault file
     let mut vault = VaultFile::new(
@@ -135,11 +141,11 @@ pub fn open_vault(
 
     // 1. Derive primary key from password + salt
     let kdf_params: KdfParams = vault.header.kdf_params.clone().into();
-    let primary_key = derive_key(
+    let primary_key = Zeroizing::new(derive_key(
         master_password.as_bytes(),
         &vault.header.salt,
         &kdf_params,
-    )?;
+    )?);
 
     // 2. Derive encryption key
     let enc_key = derive_encryption_key_hw(
@@ -150,12 +156,13 @@ pub fn open_vault(
     )?;
 
     // 3. Decrypt inner header with XChaCha20
-    let decrypted_header = x_decrypt_v2_or_legacy(
+    // Открытый заголовок содержит payload_key — затираем на выходе.
+    let decrypted_header = Zeroizing::new(x_decrypt_v2_or_legacy(
         &enc_key,
         &vault.header.encrypted_header,
         AAD_HEADER_V2,
-    )?;
-    let inner_header: VaultInnerHeader = serde_json::from_slice(&decrypted_header)?;
+    )?);
+    let mut inner_header: VaultInnerHeader = serde_json::from_slice(&decrypted_header)?;
 
     // 4. Create session
     let session = VaultSession::new(
@@ -163,6 +170,7 @@ pub fn open_vault(
         enc_key,
         inner_header.payload_key,
     );
+    inner_header.payload_key.zeroize();
 
     Ok(session)
 }
@@ -198,7 +206,7 @@ pub fn migrate_kdf_if_needed(
     // Перешифруем с новой солью и новыми параметрами.
     let new_salt = CryptoModule::generate_salt()?;
     let new_params = KdfParams::default();
-    let new_primary = derive_key(master_password.as_bytes(), &new_salt, &new_params)?;
+    let new_primary = Zeroizing::new(derive_key(master_password.as_bytes(), &new_salt, &new_params)?);
     let new_enc = derive_encryption_key_hw(
         &new_primary,
         device_key,
@@ -208,16 +216,18 @@ pub fn migrate_kdf_if_needed(
 
     // Расшифровываем inner header старым ключом (уже проверенным паролем).
     let old_session = open_vault(vault, master_password, device_key, hw_key)?;
-    let decrypted = x_decrypt_v2_or_legacy(
+    let decrypted = Zeroizing::new(x_decrypt_v2_or_legacy(
         &old_session.encryption_key,
         &vault.header.encrypted_header,
         AAD_HEADER_V2,
-    )?;
+    )?);
     let mut inner: VaultInnerHeader = serde_json::from_slice(&decrypted)?;
     inner.modified_at = chrono::Utc::now().timestamp();
 
+    let inner_bytes = Zeroizing::new(serde_json::to_vec(&inner)?);
     vault.header.encrypted_header =
-        XChaCha20Aead::encrypt_with_aad(&new_enc, &serde_json::to_vec(&inner)?, AAD_HEADER_V2)?;
+        XChaCha20Aead::encrypt_with_aad(&new_enc, &inner_bytes, AAD_HEADER_V2)?;
+    inner.payload_key.zeroize();
     vault.header.salt = new_salt;
     vault.header.kdf_params = KdfParamsSerializable::from(&new_params);
 
@@ -245,14 +255,15 @@ fn open_decoy(
         .ok_or_else(|| anyhow::anyhow!("no decoy slot"))?;
 
     let kdf_params: KdfParams = slot.kdf_params.clone().into();
-    let primary_key = derive_key(password.as_bytes(), &slot.salt, &kdf_params)?;
+    let primary_key = Zeroizing::new(derive_key(password.as_bytes(), &slot.salt, &kdf_params)?);
     let enc_key = derive_encryption_key_hw(&primary_key, device_key, hw_key, b"safepass-v1-decoy-key")?;
 
     let decrypted_header =
-        x_decrypt_v2_or_legacy(&enc_key, &slot.encrypted_header, AAD_DECOY_HEADER_V2)?;
-    let inner_header: VaultInnerHeader = serde_json::from_slice(&decrypted_header)?;
+        Zeroizing::new(x_decrypt_v2_or_legacy(&enc_key, &slot.encrypted_header, AAD_DECOY_HEADER_V2)?);
+    let mut inner_header: VaultInnerHeader = serde_json::from_slice(&decrypted_header)?;
 
     let mut session = VaultSession::new("vault-1".to_string(), enc_key, inner_header.payload_key);
+    inner_header.payload_key.zeroize();
     session.is_decoy = true;
     Ok(session)
 }
@@ -285,9 +296,9 @@ pub fn active_payload(vault: &VaultFile, is_decoy: bool) -> &[u8] {
 /// ключом. Открыть её нельзя ни одним паролем, но по размеру и виду она
 /// неотличима от включённого ложного слоя.
 pub fn build_dormant_decoy() -> Result<(DecoySlot, Vec<u8>)> {
-    let random_key: [u8; 32] = CryptoModule::generate_random_bytes(32)?
+    let random_key = Zeroizing::new(CryptoModule::generate_random_bytes(32)?
         .try_into()
-        .map_err(|_| anyhow::anyhow!("random key wrong size"))?;
+        .map_err(|_| anyhow::anyhow!("random key wrong size"))?);
     build_decoy_slot_with_key(&random_key, &generate_fake_entries())
 }
 
@@ -300,7 +311,7 @@ pub fn build_decoy_slot(
 ) -> Result<(DecoySlot, Vec<u8>)> {
     let salt = CryptoModule::generate_salt()?;
     let kdf_params = KdfParams::default();
-    let primary_key = derive_key(password.as_bytes(), &salt, &kdf_params)?;
+    let primary_key = Zeroizing::new(derive_key(password.as_bytes(), &salt, &kdf_params)?);
     let enc_key = derive_encryption_key_hw(&primary_key, device_key, hw_key, b"safepass-v1-decoy-key")?;
 
     let (mut slot, payload) = build_decoy_slot_with_key(&enc_key, entries_json)?;
@@ -312,21 +323,26 @@ pub fn build_decoy_slot(
 /// Общая сборка ложного слота: свежий payload key, заголовок и записи,
 /// зашифрованные переданным ключом.
 fn build_decoy_slot_with_key(enc_key: &[u8; 32], entries_json: &str) -> Result<(DecoySlot, Vec<u8>)> {
-    let payload_key: [u8; 32] = CryptoModule::generate_random_bytes(32)?
+    let mut payload_key: [u8; 32] = CryptoModule::generate_random_bytes(32)?
         .try_into()
         .map_err(|_| anyhow::anyhow!("payload key wrong size"))?;
 
     let now = chrono::Utc::now().timestamp();
-    let inner_header = VaultInnerHeader {
+    let mut inner_header = VaultInnerHeader {
         created_at: now,
         modified_at: now,
         entry_count: count_json_array(entries_json),
         payload_key,
         decoy_enabled: false,
     };
+    let inner_header_bytes = Zeroizing::new(serde_json::to_vec(&inner_header)?);
     let encrypted_header =
-        XChaCha20Aead::encrypt_with_aad(enc_key, &serde_json::to_vec(&inner_header)?, AAD_DECOY_HEADER_V2)?;
+        XChaCha20Aead::encrypt_with_aad(enc_key, &inner_header_bytes, AAD_DECOY_HEADER_V2)?;
     let encrypted_payload = encrypt_entries(&payload_key, entries_json)?;
+
+    // Открытые копии payload-ключа больше не нужны.
+    payload_key.zeroize();
+    inner_header.payload_key.zeroize();
 
     Ok((
         DecoySlot {
@@ -394,12 +410,14 @@ fn update_decoy_enabled(
     enc_key: &[u8; 32],
     enabled: bool,
 ) -> Result<()> {
-    let decrypted = x_decrypt_v2_or_legacy(enc_key, &vault.header.encrypted_header, AAD_HEADER_V2)?;
+    let decrypted = Zeroizing::new(x_decrypt_v2_or_legacy(enc_key, &vault.header.encrypted_header, AAD_HEADER_V2)?);
     let mut inner: VaultInnerHeader = serde_json::from_slice(&decrypted)?;
     inner.decoy_enabled = enabled;
     inner.modified_at = chrono::Utc::now().timestamp();
+    let inner_bytes = Zeroizing::new(serde_json::to_vec(&inner)?);
     vault.header.encrypted_header =
-        XChaCha20Aead::encrypt_with_aad(enc_key, &serde_json::to_vec(&inner)?, AAD_HEADER_V2)?;
+        XChaCha20Aead::encrypt_with_aad(enc_key, &inner_bytes, AAD_HEADER_V2)?;
+    inner.payload_key.zeroize();
     Ok(())
 }
 
@@ -440,15 +458,18 @@ fn hex_decode(s: &str) -> Result<Vec<u8>> {
 /// Ключ обёртки keyfile: HKDF(device_key, salt=keyfile_id).
 /// Украденная флешка без device key с ПК секрет не раскрывает.
 fn hw_wrap_key(device_key: &[u8; 16], id: &str) -> Result<[u8; 32]> {
-    let okm = crate::crypto::derive_hkdf_key(
+    let mut okm = crate::crypto::derive_hkdf_key(
         id.as_bytes(),
         device_key,
         b"mynx-hwkey-wrap-v1",
         32,
     )?;
-    okm.as_slice()
+    let key: [u8; 32] = okm
+        .as_slice()
         .try_into()
-        .map_err(|_| anyhow::anyhow!("wrap key wrong size"))
+        .map_err(|_| anyhow::anyhow!("wrap key wrong size"))?;
+    okm.zeroize();
+    Ok(key)
 }
 
 /// Пометить keyfile скрытым (Windows: hidden+system). Best-effort.
@@ -505,22 +526,26 @@ pub fn read_hw_keyfile(
 
     // Новый формат: секрет зашифрован ключом от device_key
     if let Some(wrapped_hex) = kf.wrapped.as_deref() {
-        let wrap_key = hw_wrap_key(device_key, expected_id)?;
+        let wrap_key = Zeroizing::new(hw_wrap_key(device_key, expected_id)?);
         let blob = hex_decode(wrapped_hex)?;
-        let secret = x_decrypt_v2_or_legacy(&wrap_key, &blob, AAD_HW_KEYFILE_V2)?;
-        return secret
+        let mut secret = x_decrypt_v2_or_legacy(&wrap_key, &blob, AAD_HW_KEYFILE_V2)?;
+        let arr: [u8; 32] = secret
             .as_slice()
             .try_into()
-            .map_err(|_| anyhow::anyhow!("keyfile secret wrong size"));
+            .map_err(|_| anyhow::anyhow!("keyfile secret wrong size"))?;
+        secret.zeroize();
+        return Ok(arr);
     }
 
     // LEGACY: открытый hex
     if let Some(secret_hex) = kf.secret.as_deref() {
-        let raw = hex_decode(secret_hex)?;
-        return raw
+        let mut raw = hex_decode(secret_hex)?;
+        let arr: [u8; 32] = raw
             .as_slice()
             .try_into()
-            .map_err(|_| anyhow::anyhow!("keyfile secret wrong size"));
+            .map_err(|_| anyhow::anyhow!("keyfile secret wrong size"))?;
+        raw.zeroize();
+        return Ok(arr);
     }
 
     Err(anyhow::anyhow!("invalid keyfile"))
@@ -584,16 +609,18 @@ pub fn enable_hw_key(
 
     let id_bytes = CryptoModule::generate_random_bytes(8)?;
     let keyfile_id = hex_encode(&id_bytes);
-    let secret: [u8; 32] = CryptoModule::generate_random_bytes(32)?
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("hw secret wrong size"))?;
+    let secret: Zeroizing<[u8; 32]> = Zeroizing::new(
+        CryptoModule::generate_random_bytes(32)?
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("hw secret wrong size"))?,
+    );
 
     // Перешифровка реального заголовка с hw-секретом
     let kdf_params: KdfParams = vault.header.kdf_params.clone().into();
-    let primary = derive_key(master_password.as_bytes(), &vault.header.salt, &kdf_params)?;
-    let new_enc = derive_encryption_key_hw(&primary, device_key, Some(&secret), b"safepass-v1-enc-key")?;
+    let primary = Zeroizing::new(derive_key(master_password.as_bytes(), &vault.header.salt, &kdf_params)?);
+    let new_enc = derive_encryption_key_hw(&primary, device_key, Some(&*secret), b"safepass-v1-enc-key")?;
     let decrypted =
-        x_decrypt_v2_or_legacy(&session.encryption_key, &vault.header.encrypted_header, AAD_HEADER_V2)?;
+        Zeroizing::new(x_decrypt_v2_or_legacy(&session.encryption_key, &vault.header.encrypted_header, AAD_HEADER_V2)?);
     vault.header.encrypted_header =
         XChaCha20Aead::encrypt_with_aad(&new_enc, &decrypted, AAD_HEADER_V2)?;
     vault.header.hw_key = Some(HwKeyInfo {
@@ -605,7 +632,7 @@ pub fn enable_hw_key(
         .and_then(|dp| open_decoy(vault, dp, device_key, None).ok())
         .and_then(|s| decrypt_entries(&s.payload_key, active_payload(vault, true)).ok());
     let (slot, payload) = match (decoy_password, decoy_entries) {
-        (Some(dp), Some(entries)) => build_decoy_slot(dp, device_key, Some(&secret), &entries)?,
+        (Some(dp), Some(entries)) => build_decoy_slot(dp, device_key, Some(&*secret), &entries)?,
         _ => build_dormant_decoy()?,
     };
     vault.header.decoy = Some(slot);
@@ -628,10 +655,10 @@ pub fn disable_hw_key_with_secret(
 
     // Перешифровка реального заголовка без hw-секрета
     let kdf_params: KdfParams = vault.header.kdf_params.clone().into();
-    let primary = derive_key(master_password.as_bytes(), &vault.header.salt, &kdf_params)?;
+    let primary = Zeroizing::new(derive_key(master_password.as_bytes(), &vault.header.salt, &kdf_params)?);
     let new_enc = derive_encryption_key(&primary, device_key, b"safepass-v1-enc-key")?;
     let decrypted =
-        x_decrypt_v2_or_legacy(&session.encryption_key, &vault.header.encrypted_header, AAD_HEADER_V2)?;
+        Zeroizing::new(x_decrypt_v2_or_legacy(&session.encryption_key, &vault.header.encrypted_header, AAD_HEADER_V2)?);
     vault.header.encrypted_header =
         XChaCha20Aead::encrypt_with_aad(&new_enc, &decrypted, AAD_HEADER_V2)?;
     vault.header.hw_key = None;
@@ -662,12 +689,14 @@ pub fn update_decoy_inner_header(
         .decoy
         .as_mut()
         .ok_or_else(|| anyhow::anyhow!("no decoy slot"))?;
-    let decrypted = x_decrypt_v2_or_legacy(enc_key, &slot.encrypted_header, AAD_DECOY_HEADER_V2)?;
+    let decrypted = Zeroizing::new(x_decrypt_v2_or_legacy(enc_key, &slot.encrypted_header, AAD_DECOY_HEADER_V2)?);
     let mut inner: VaultInnerHeader = serde_json::from_slice(&decrypted)?;
     inner.entry_count = entry_count.min(MAX_REASONABLE_ENTRIES);
     inner.modified_at = chrono::Utc::now().timestamp();
+    let inner_bytes = Zeroizing::new(serde_json::to_vec(&inner)?);
     slot.encrypted_header =
-        XChaCha20Aead::encrypt_with_aad(enc_key, &serde_json::to_vec(&inner)?, AAD_DECOY_HEADER_V2)?;
+        XChaCha20Aead::encrypt_with_aad(enc_key, &inner_bytes, AAD_DECOY_HEADER_V2)?;
+    inner.payload_key.zeroize();
     Ok(())
 }
 
@@ -868,12 +897,14 @@ pub fn update_inner_header(
     enc_key: &[u8; 32],
     entry_count: u32,
 ) -> Result<()> {
-    let decrypted = x_decrypt_v2_or_legacy(enc_key, &vault.header.encrypted_header, AAD_HEADER_V2)?;
+    let decrypted = Zeroizing::new(x_decrypt_v2_or_legacy(enc_key, &vault.header.encrypted_header, AAD_HEADER_V2)?);
     let mut inner: VaultInnerHeader = serde_json::from_slice(&decrypted)?;
     inner.entry_count = entry_count.min(MAX_REASONABLE_ENTRIES);
     inner.modified_at = chrono::Utc::now().timestamp();
+    let inner_bytes = Zeroizing::new(serde_json::to_vec(&inner)?);
     vault.header.encrypted_header =
-        XChaCha20Aead::encrypt_with_aad(enc_key, &serde_json::to_vec(&inner)?, AAD_HEADER_V2)?;
+        XChaCha20Aead::encrypt_with_aad(enc_key, &inner_bytes, AAD_HEADER_V2)?;
+    inner.payload_key.zeroize();
     Ok(())
 }
 
@@ -934,7 +965,7 @@ pub fn save_entries_to_vault(
 pub fn build_export(entries_json: &str, master_password: &str) -> Result<Vec<u8>> {
     let salt = CryptoModule::generate_salt()?;
     let kdf_params = KdfParams::default();
-    let export_key = derive_key(master_password.as_bytes(), &salt, &kdf_params)?;
+    let export_key = Zeroizing::new(derive_key(master_password.as_bytes(), &salt, &kdf_params)?);
     let payload = XChaCha20Aead::encrypt_with_aad(&export_key, entries_json.as_bytes(), AAD_EXPORT_V2)?;
     let export = ExportFile::new(
         salt,

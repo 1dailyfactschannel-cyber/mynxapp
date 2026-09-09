@@ -11,12 +11,13 @@ export function useAutoLock({ timeoutMinutes, onLock, isEnabled }: UseAutoLockPr
   const [isIdle, setIsIdle] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastActivityRef = useRef(Date.now());
+  const wasIdleRef = useRef(false);
 
+  // Активность — только ref, без setState: иначе каждый mousemove/scroll
+  // при прокрутке списка настроек рендерит весь VaultScreen.
   const resetTimer = useCallback(() => {
     lastActivityRef.current = Date.now();
-    setTimeRemaining(timeoutMinutes * 60);
-    setIsIdle(false);
-  }, [timeoutMinutes]);
+  }, []);
 
   const lock = useCallback(() => {
     if (timerRef.current) {
@@ -46,13 +47,23 @@ export function useAutoLock({ timeoutMinutes, onLock, isEnabled }: UseAutoLockPr
     timerRef.current = setInterval(() => {
       const elapsed = Math.floor((Date.now() - lastActivityRef.current) / 1000);
       const remaining = Math.max(0, timeoutMinutes * 60 - elapsed);
-      
-      setTimeRemaining(remaining);
-      
+
       if (remaining === 0) {
         lock();
-      } else if (remaining <= 30) {
-        setIsIdle(true);
+        return;
+      }
+      // Обратный отсчёт виден только в последние 30 секунд — публикуем
+      // состояние лишь тогда, чтобы не рендерить экран каждую секунду.
+      if (remaining <= 30) {
+        setTimeRemaining(remaining);
+        if (!wasIdleRef.current) {
+          wasIdleRef.current = true;
+          setIsIdle(true);
+        }
+      } else if (wasIdleRef.current) {
+        wasIdleRef.current = false;
+        setIsIdle(false);
+        setTimeRemaining(remaining);
       }
     }, 1000);
 

@@ -14,6 +14,16 @@ pub const ARGON2_ITERATIONS: u32 = 4;
 pub const ARGON2_PARALLELISM: u32 = 2;
 pub const KEY_LENGTH: usize = 32;
 
+/// Жёсткие верхние границы для параметров, пришедших из заголовка
+/// vault-файла: атакующий с доступом на запись к файлу мог бы выставить
+/// огромные memory_kb/iterations (формально валидные для argon2::Params)
+/// и подвесить unlock или уронить процесс на аллокации. Всё, что выше
+/// пределов, отклоняется обычной ошибкой до вызова Argon2. Реальные
+/// параметры приложения (64 MB / 4 iter / 2 lanes) далеко ниже пределов.
+pub const MAX_ARGON2_MEMORY_KB: u32 = 1024 * 1024; // 1 GiB
+pub const MAX_ARGON2_ITERATIONS: u32 = 16;
+pub const MAX_ARGON2_PARALLELISM: u32 = 8;
+
 #[derive(Debug, Clone)]
 pub struct KdfParams {
     pub memory_kb: u32,
@@ -40,6 +50,16 @@ impl KdfParams {
     /// crashed the whole process instead of failing the unlock. Now the
     /// error propagates and the caller returns "wrong_password"/"bad vault".
     pub fn to_argon2_params(&self) -> anyhow::Result<argon2::Params> {
+        // SECURITY: параметры приходят из заголовка vault-файла, который
+        // может подделать атакующий с доступом на запись. Формально валидные
+        // для argon2::Params, но абсурдные значения (гигабайты памяти, сотни
+        // итераций) превращают unlock в DoS — отклоняем до вызова Argon2.
+        if self.memory_kb > MAX_ARGON2_MEMORY_KB
+            || self.iterations > MAX_ARGON2_ITERATIONS
+            || self.parallelism > MAX_ARGON2_PARALLELISM
+        {
+            return Err(anyhow::anyhow!("kdf params exceed allowed bounds"));
+        }
         // argon2::Error не реализует std::error::Error, поэтому `?` не
         // конвертируется в anyhow::Error — маппим вручную через Display.
         argon2::Params::new(
@@ -82,6 +102,22 @@ pub fn derive_key(password: &[u8], salt: &[u8], params: &KdfParams) -> anyhow::R
 mod tests {
     use super::*;
     use getrandom::getrandom;
+
+    #[test]
+    fn test_forged_header_params_rejected() {
+        // Подделанный заголовок с абсурдными параметрами должен падать
+        // обычной ошибкой, а не уходить в многогигабайтную аллокацию Argon2.
+        for params in [
+            KdfParams { memory_kb: MAX_ARGON2_MEMORY_KB + 1, ..KdfParams::default() },
+            KdfParams { iterations: MAX_ARGON2_ITERATIONS + 1, ..KdfParams::default() },
+            KdfParams { parallelism: MAX_ARGON2_PARALLELISM + 1, ..KdfParams::default() },
+        ] {
+            assert!(params.to_argon2_params().is_err());
+            assert!(derive_key(b"pw", b"0123456789abcdef", &params).is_err());
+        }
+        // Реальные параметры приложения остаются в пределах границ.
+        assert!(KdfParams::default().to_argon2_params().is_ok());
+    }
 
     #[test]
     fn test_derive_key_deterministic() {

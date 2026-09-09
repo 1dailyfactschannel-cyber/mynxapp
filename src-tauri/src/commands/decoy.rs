@@ -81,8 +81,8 @@ pub async fn vault_remove_decoy(
 }
 
 /// Статус ложного слоя (читается из зашифрованного реального заголовка).
-/// Из ложной сессии возвращает true — сам факт разблокировки ложным паролем
-/// означает, что слой включён.
+/// Из ложной сессии отвечаем enabled:false — как vault без ложного слоя:
+/// иначе сам ответ подтверждает принуждающему, что введён ложный пароль.
 #[tauri::command]
 pub async fn vault_decoy_status(
     request: VaultIdRequest,
@@ -90,7 +90,7 @@ pub async fn vault_decoy_status(
 ) -> Result<DecoyStatusResponse, String> {
     let (enc_key, _payload_key, is_decoy) = session_keys(&state, &request.vault_id)?;
     if is_decoy {
-        return Ok(DecoyStatusResponse { enabled: true });
+        return Ok(DecoyStatusResponse { enabled: false });
     }
 
     let vault_path = Path::new(&request.vault_id);

@@ -223,20 +223,41 @@ pub(crate) fn normalize_domain(url: &str) -> String {
 }
 
 /// Approximate registrable domain (eTLD+1) without a full Public Suffix
-/// List: the last two labels, except for the common two-level public
-/// suffixes (co.uk, com.au, ...) where three labels are taken.
+/// List: the last two labels, except for known two-label public suffixes
+/// where three labels are taken.
+///
+/// LIMITATION: this is a curated list, not the real Public Suffix List
+/// (no suitable crate is vendored and the build must stay offline-friendly).
+/// Besides country-code second levels (co.uk, com.au, ...) it covers the
+/// well-known shared-hosting suffixes (github.io, web.app, herokuapp.com,
+/// ...) so that credentials saved for one tenant's subdomain are never
+/// offered on another tenant's subdomain of the same hosting platform.
+/// Suffixes missing from this list fall back to last-two-labels matching.
+///
+/// PUBLIC_SUFFIXES is sorted; lookup uses binary search.
 fn registrable_domain(host: &str) -> String {
+    // Lowercase and drop a trailing dot so "EXAMPLE.com." == "example.com";
+    // empty labels (double dots) are filtered out below. Punycode/IDN ASCII
+    // hosts pass through unchanged; no panics on any input.
+    let host = host.trim_end_matches('.').to_lowercase();
     let labels: Vec<&str> = host.split('.').filter(|l| !l.is_empty()).collect();
     if labels.len() <= 2 {
         return labels.join(".");
     }
-    const TWO_LEVEL_SUFFIXES: &[&str] = &[
-        "co.uk", "org.uk", "ac.uk", "gov.uk", "me.uk", "com.au", "net.au", "org.au",
-        "co.jp", "ne.jp", "or.jp", "ac.jp", "com.br", "com.cn", "com.mx", "com.tr",
-        "co.in", "co.nz", "co.za", "com.ua", "co.il",
+    // Sorted ascending — keep it that way, binary_search depends on it.
+    const PUBLIC_SUFFIXES: &[&str] = &[
+        "ac.uk", "amazonaws.com", "azurewebsites.net", "blogspot.com",
+        "cloudfront.net", "co.il", "co.in", "co.jp", "co.nz", "co.uk", "co.za",
+        "com.au", "com.br", "com.cn", "com.mx", "com.tr", "com.ua", "eu.org",
+        "firebaseapp.com", "fly.dev", "github.io", "gitlab.io", "glitch.me",
+        "gov.uk", "herokuapp.com", "me.uk", "myshopify.com", "ne.jp",
+        "neocities.org", "net.au", "netlify.app", "or.jp", "org.au", "org.uk",
+        "pages.dev", "railway.app", "render.com", "repl.co", "squarespace.com",
+        "surge.sh", "tumblr.com", "vercel.app", "web.app", "wixsite.com",
+        "wordpress.com", "workers.dev",
     ];
     let last_two = labels[labels.len() - 2..].join(".");
-    if TWO_LEVEL_SUFFIXES.contains(&last_two.as_str()) {
+    if PUBLIC_SUFFIXES.binary_search(&last_two.as_str()).is_ok() {
         labels[labels.len() - 3..].join(".")
     } else {
         last_two
@@ -308,5 +329,25 @@ mod tests {
         assert_eq!(registrable_domain("secure.paypal.com"), "paypal.com");
         assert_eq!(registrable_domain("a.b.example.co.uk"), "example.co.uk");
         assert_eq!(registrable_domain("evil.io"), "evil.io");
+        // Shared-hosting public suffixes: the tenant label is part of the
+        // registrable domain.
+        assert_eq!(registrable_domain("victim.github.io"), "victim.github.io");
+        assert_eq!(registrable_domain("app.pages.dev"), "app.pages.dev");
+        assert_eq!(registrable_domain("site.herokuapp.com"), "site.herokuapp.com");
+        // Case and trailing-dot normalization.
+        assert_eq!(registrable_domain("WWW.Example.COM."), "example.com");
+        assert_eq!(registrable_domain(""), "");
+    }
+
+    #[test]
+    fn test_cross_tenant_shared_hosting_never_matches() {
+        // Different tenants of the same hosting platform must not share
+        // credentials even though the last two labels are identical.
+        assert_eq!(domain_score("attacker.github.io", "victim.github.io"), 0);
+        assert_eq!(domain_score("a.web.app", "b.web.app"), 0);
+        assert_eq!(domain_score("foo.vercel.app", "bar.vercel.app"), 0);
+        // The same tenant's subdomains still match.
+        assert_eq!(domain_score("www.victim.github.io", "victim.github.io"), 500);
+        assert_eq!(domain_score("victim.github.io", "victim.github.io"), 1000);
     }
 }
