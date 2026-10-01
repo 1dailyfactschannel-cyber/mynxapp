@@ -24,7 +24,7 @@ jobs:
           cd extension
           zip -r "../mynx-extension-${{ steps.ver.outputs.version }}.zip" . \
             -x "README.md" "store/*" "*.md"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: mynx-extension-${{ steps.ver.outputs.version }}
           path: mynx-extension-*.zip
